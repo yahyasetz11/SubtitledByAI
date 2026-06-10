@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 
+import httpx
 from dotenv import load_dotenv
 
 
@@ -56,3 +58,48 @@ class Config:
             "openai": bool(self.openai_api_key),
             "anthropic": bool(self.anthropic_api_key),
         }
+
+
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+NETWORK_ERRORS = (ConnectionError, TimeoutError, httpx.TransportError)
+
+
+def _status_of(exc: Exception) -> int | None:
+    for attr in ("status_code", "code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    return value if isinstance(value, int) else None
+
+
+def _retry_after_of(exc: Exception) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    try:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def call_with_retries(fn, *, attempts: int = 4, base_delay: float = 2.0,
+                      sleep=time.sleep):
+    """Exponential backoff for transient transport errors (429/5xx/network).
+
+    `attempts` is the total number of tries. Honors Retry-After when present.
+    Non-retryable errors (or exhausted attempts) propagate to the caller.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            status = _status_of(exc)
+            retryable = status in RETRYABLE_STATUS or isinstance(exc, NETWORK_ERRORS)
+            if not retryable or attempt == attempts:
+                raise
+            delay = _retry_after_of(exc)
+            if delay is None:
+                delay = base_delay * (2 ** (attempt - 1))
+            sleep(delay)

@@ -44,3 +44,81 @@ def test_config_missing_gemini_key_raises(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
         Config.load()
+
+
+from app.providers import call_with_retries
+
+
+class FakeHTTPError(Exception):
+    """Mimics provider SDK errors: .status_code + .response.headers."""
+
+    def __init__(self, status_code, retry_after=None):
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+        class _Resp:
+            headers = {"retry-after": retry_after} if retry_after else {}
+        self.response = _Resp()
+
+
+def test_retry_succeeds_after_transient_errors():
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise FakeHTTPError(503)
+        return "ok"
+
+    assert call_with_retries(flaky, sleep=lambda s: None) == "ok"
+    assert calls["n"] == 3
+
+
+def test_retry_respects_retry_after_header():
+    sleeps = []
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FakeHTTPError(429, retry_after="7")
+        return "ok"
+
+    assert call_with_retries(flaky, sleep=sleeps.append) == "ok"
+    assert sleeps == [7.0]
+
+
+def test_retry_gives_up_after_max_attempts():
+    calls = {"n": 0}
+
+    def always_500():
+        calls["n"] += 1
+        raise FakeHTTPError(500)
+
+    with pytest.raises(FakeHTTPError):
+        call_with_retries(always_500, sleep=lambda s: None)
+    assert calls["n"] == 4  # 1 attempt + 3 retries
+
+
+def test_non_retryable_error_raises_immediately():
+    calls = {"n": 0}
+
+    def bad_request():
+        calls["n"] += 1
+        raise FakeHTTPError(400)
+
+    with pytest.raises(FakeHTTPError):
+        call_with_retries(bad_request, sleep=lambda s: None)
+    assert calls["n"] == 1
+
+
+def test_network_errors_are_retryable():
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("reset by peer")
+        return "ok"
+
+    assert call_with_retries(flaky, sleep=lambda s: None) == "ok"
