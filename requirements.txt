@@ -1,0 +1,12 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-dotenv>=1.0
+python-multipart>=0.0.12
+google-genai>=1.0
+openai>=1.60
+anthropic>=0.45
+# Floor, not exact pin: YouTube changes frequently; on download failure the app
+# tells the user to run: pip install -U yt-dlp
+yt-dlp>=2025.1.26
+pytest>=8.3
+httpx>=0.27
