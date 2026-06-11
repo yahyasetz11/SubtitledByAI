@@ -169,3 +169,138 @@ class UsageTracker:
 
 def _fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}K" if n >= 1000 else str(n)
+
+
+@dataclass
+class LLMResponse:
+    text: str
+    input_tokens: int
+    output_tokens: int
+    truncated: bool = False
+
+
+def _from_gemini(resp) -> LLMResponse:
+    usage = getattr(resp, "usage_metadata", None)
+    finish = ""
+    candidates = getattr(resp, "candidates", None) or []
+    if candidates:
+        reason = getattr(candidates[0], "finish_reason", None)
+        finish = getattr(reason, "name", None) or str(reason or "")
+    return LLMResponse(
+        text=resp.text or "",
+        input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+        output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+        truncated="MAX_TOKENS" in finish.upper(),
+    )
+
+
+def _from_openai(resp) -> LLMResponse:
+    choice = resp.choices[0]
+    return LLMResponse(
+        text=choice.message.content or "",
+        input_tokens=getattr(resp.usage, "prompt_tokens", 0) or 0,
+        output_tokens=getattr(resp.usage, "completion_tokens", 0) or 0,
+        truncated=choice.finish_reason == "length",
+    )
+
+
+def _from_anthropic(resp) -> LLMResponse:
+    text = "".join(
+        block.text for block in resp.content if getattr(block, "type", "") == "text"
+    )
+    return LLMResponse(
+        text=text,
+        input_tokens=getattr(resp.usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(resp.usage, "output_tokens", 0) or 0,
+        truncated=resp.stop_reason == "max_tokens",
+    )
+
+
+class GeminiClient:
+    """Transcription (audio via Files API) and translation."""
+
+    def __init__(self, api_key: str, model: str):
+        from google import genai  # lazy: keeps import cost out of tests
+        self._genai = genai
+        self.client = genai.Client(api_key=api_key)
+        self.model = model
+
+    def upload_audio(self, path: Path):
+        """Upload via Files API and wait until ACTIVE (audio gets processed)."""
+        file = self.client.files.upload(file=str(path))
+        deadline = time.time() + 300
+        while getattr(file.state, "name", str(file.state)) == "PROCESSING":
+            if time.time() > deadline:
+                raise TimeoutError(f"Files API stuck PROCESSING: {path.name}")
+            time.sleep(2)
+            file = self.client.files.get(name=file.name)
+        state = getattr(file.state, "name", str(file.state))
+        if state != "ACTIVE":
+            raise RuntimeError(f"Files API upload {path.name} state={state}")
+        return file
+
+    def generate(self, system: str, user: str, audio=None) -> LLMResponse:
+        from google.genai import types
+        contents = [audio, user] if audio is not None else [user]
+        resp = self.client.models.generate_content(
+            model=self.model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                temperature=0.3,
+            ),
+        )
+        return _from_gemini(resp)
+
+
+class OpenAIClient:
+    def __init__(self, api_key: str, model: str):
+        from openai import OpenAI
+        self.client = OpenAI(api_key=api_key, max_retries=0)  # we retry ourselves
+        self.model = model
+
+    def generate(self, system: str, user: str, audio=None) -> LLMResponse:
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+        return _from_openai(resp)
+
+
+class AnthropicClient:
+    def __init__(self, api_key: str, model: str):
+        import anthropic
+        self.client = anthropic.Anthropic(api_key=api_key, max_retries=0)
+        self.model = model
+
+    def generate(self, system: str, user: str, audio=None) -> LLMResponse:
+        resp = self.client.messages.create(
+            model=self.model,
+            system=system,
+            max_tokens=16384,
+            messages=[{"role": "user", "content": user}],
+            temperature=0.3,
+        )
+        return _from_anthropic(resp)
+
+
+def make_transcriber(cfg: Config) -> GeminiClient:
+    return GeminiClient(cfg.gemini_api_key, cfg.transcribe_model)
+
+
+def make_translator(cfg: Config, provider: str):
+    if provider == "gemini":
+        return GeminiClient(cfg.gemini_api_key, cfg.translate_models["gemini"])
+    if provider == "openai":
+        if not cfg.openai_api_key:
+            raise ConfigError("OPENAI_API_KEY belum diisi di .env")
+        return OpenAIClient(cfg.openai_api_key, cfg.translate_models["openai"])
+    if provider == "anthropic":
+        if not cfg.anthropic_api_key:
+            raise ConfigError("ANTHROPIC_API_KEY belum diisi di .env")
+        return AnthropicClient(cfg.anthropic_api_key, cfg.translate_models["anthropic"])
+    raise ConfigError(f"Penerjemah tidak dikenal: {provider}")

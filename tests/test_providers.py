@@ -164,3 +164,70 @@ def test_usage_unknown_model_costs_zero(tmp_path):
     summary = tracker.summary()
     assert summary["cost_usd"] == 0.0
     assert summary["unpriced_models"] == ["some-future-model"]
+
+
+from types import SimpleNamespace
+
+from app.providers import (
+    LLMResponse, _from_anthropic, _from_gemini, _from_openai, make_translator,
+)
+
+
+def _gemini_resp(text="hi", finish="STOP"):
+    return SimpleNamespace(
+        text=text,
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=100, candidates_token_count=20,
+        ),
+        candidates=[SimpleNamespace(
+            finish_reason=SimpleNamespace(name=finish),
+        )],
+    )
+
+
+def test_from_gemini_maps_fields():
+    resp = _from_gemini(_gemini_resp())
+    assert resp == LLMResponse(text="hi", input_tokens=100, output_tokens=20,
+                               truncated=False)
+
+
+def test_from_gemini_detects_truncation():
+    assert _from_gemini(_gemini_resp(finish="MAX_TOKENS")).truncated is True
+
+
+def test_from_openai_maps_fields():
+    raw = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="halo"), finish_reason="length",
+        )],
+        usage=SimpleNamespace(prompt_tokens=50, completion_tokens=10),
+    )
+    resp = _from_openai(raw)
+    assert resp == LLMResponse(text="halo", input_tokens=50, output_tokens=10,
+                               truncated=True)
+
+
+def test_from_anthropic_maps_fields():
+    raw = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="ya")],
+        usage=SimpleNamespace(input_tokens=30, output_tokens=5),
+        stop_reason="end_turn",
+    )
+    resp = _from_anthropic(raw)
+    assert resp == LLMResponse(text="ya", input_tokens=30, output_tokens=5,
+                               truncated=False)
+
+
+def test_make_translator_requires_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = Config.load()
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        make_translator(cfg, "openai")
+
+
+def test_make_translator_rejects_unknown_provider(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    cfg = Config.load()
+    with pytest.raises(ConfigError):
+        make_translator(cfg, "deepseek")
