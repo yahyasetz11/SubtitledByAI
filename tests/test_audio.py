@@ -80,3 +80,44 @@ def test_plan_long_audio_produces_sequential_chunks():
     assert chunks[0].end == chunks[1].start
     assert chunks[1].end == chunks[2].start
     assert chunks[2].end == 2000.0
+
+
+from app.audio import (
+    build_cut_args, build_normalize_args, build_silence_args, build_ytdlp_args,
+)
+
+
+def test_build_normalize_args_mono_16k_64kbps():
+    args = build_normalize_args("in.mp4", "out.mp3")
+    assert args == ["ffmpeg", "-y", "-i", "in.mp4", "-vn", "-ac", "1",
+                    "-ar", "16000", "-b:a", "64k", "out.mp3"]
+
+
+def test_build_silence_args_uses_threshold():
+    args = build_silence_args("audio.mp3", -25)
+    assert "-af" in args
+    assert "silencedetect=noise=-25dB:d=0.5" in args
+    assert args[-2:] == ["-f", "null"] or args[-3:] == ["-f", "null", "-"]
+
+
+def test_build_cut_args_seeks_before_input_and_copies():
+    args = build_cut_args("audio.mp3", "chunks/chunk_001.mp3", 10.0, 614.25)
+    i_input = args.index("-i")
+    assert args.index("-ss") < i_input          # fast seek
+    assert "604.250" in args                    # -t duration, not -to
+    assert "copy" in args
+
+
+def test_build_ytdlp_args_audio_only_default():
+    args = build_ytdlp_args("https://youtu.be/x", "out/source.%(ext)s",
+                            save_mp4=False, cookies_file=None)
+    assert "bestaudio/best" in args
+    assert "--cookies" not in args
+
+
+def test_build_ytdlp_args_mp4_and_cookies():
+    args = build_ytdlp_args("https://youtu.be/x", "out/source.%(ext)s",
+                            save_mp4=True, cookies_file="c.txt")
+    assert "bestvideo*+bestaudio/best" in args
+    assert "mp4" in args
+    assert "--cookies" in args and "c.txt" in args
