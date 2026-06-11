@@ -122,3 +122,45 @@ def test_network_errors_are_retryable():
         return "ok"
 
     assert call_with_retries(flaky, sleep=lambda s: None) == "ok"
+
+
+import json
+
+from app.providers import UsageTracker
+
+
+def test_usage_accumulates_and_persists(tmp_path):
+    path = tmp_path / "usage.json"
+    tracker = UsageTracker(path)
+    tracker.add("gemini-2.5-pro", input_tokens=40_000, output_tokens=10_000)
+    tracker.add("gemini-2.5-pro", input_tokens=12_000, output_tokens=2_000)
+    tracker.add("gemini-2.5-flash", input_tokens=8_000, output_tokens=3_000)
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["models"]["gemini-2.5-pro"]["input_tokens"] == 52_000
+    assert data["models"]["gemini-2.5-pro"]["output_tokens"] == 12_000
+
+    summary = tracker.summary()
+    assert summary["input_tokens"] == 60_000
+    assert summary["output_tokens"] == 15_000
+    # pro: 52k*1.25/1M + 12k*10/1M = 0.065 + 0.12 = 0.185
+    # flash: 8k*0.30/1M + 3k*2.50/1M = 0.0024 + 0.0075 = 0.0099
+    assert summary["cost_usd"] == pytest.approx(0.1949, abs=1e-4)
+    assert "60.0K in / 15.0K out" in summary["line"]
+    assert "$0.19" in summary["line"]
+
+
+def test_usage_reloads_existing_file(tmp_path):
+    path = tmp_path / "usage.json"
+    UsageTracker(path).add("gpt-4o", 1000, 500)
+    tracker2 = UsageTracker(path)  # e.g. after a checkpoint retry
+    tracker2.add("gpt-4o", 1000, 500)
+    assert tracker2.summary()["input_tokens"] == 2000
+
+
+def test_usage_unknown_model_costs_zero(tmp_path):
+    tracker = UsageTracker(tmp_path / "usage.json")
+    tracker.add("some-future-model", 1_000_000, 1_000_000)
+    summary = tracker.summary()
+    assert summary["cost_usd"] == 0.0
+    assert summary["unpriced_models"] == ["some-future-model"]
