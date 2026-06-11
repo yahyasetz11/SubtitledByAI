@@ -89,3 +89,49 @@ def test_cps_flags_fast_lines_without_cutting():
 def test_events_sorted_by_start():
     events, _ = run([E(5.0, 6.0, "Kedua."), E(0.0, 1.0, "Pertama.")])
     assert [e.text for e in events] == ["Pertama.", "Kedua."]
+
+from pathlib import Path
+
+from app.subtitle import format_ass_time, format_srt_time, render_ass, render_srt
+
+TEMPLATE = Path("context/template.ass").read_text(encoding="utf-8")
+
+
+def test_format_ass_time():
+    assert format_ass_time(0) == "0:00:00.00"
+    assert format_ass_time(3661.456) == "1:01:01.46"
+    assert format_ass_time(59.999) == "0:01:00.00"  # centisecond carry
+
+
+def test_format_srt_time():
+    assert format_srt_time(0) == "00:00:00,000"
+    assert format_srt_time(83.4567) == "00:01:23,457"
+    assert format_srt_time(3600) == "01:00:00,000"
+
+
+def test_render_ass_copies_template_header_and_appends_dialogue():
+    events = [E(1.0, 2.5, "Halo semua!"),
+              E(3.0, 4.0, "Episode kali ini...", type="narration")]
+    out = render_ass(events, TEMPLATE)
+    assert "[Script Info]" in out
+    assert "PlayResX: 1920" in out
+    assert "Style: Default,Comic Sans MS" in out
+    lines = out.splitlines()
+    fmt_i = next(i for i, l in enumerate(lines) if l.startswith("Format: Layer"))
+    assert lines[fmt_i + 1] == \
+        "Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,Halo semua!"
+    assert lines[fmt_i + 2] == \
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Narrator,,0,0,0,,Episode kali ini..."
+
+
+def test_render_ass_escapes_newlines():
+    out = render_ass([E(0.0, 1.0, "baris satu\nbaris dua")], TEMPLATE)
+    assert "baris satu\\Nbaris dua" in out
+
+
+def test_render_srt_format():
+    events = [E(1.0, 2.5, "Halo semua!"), E(3.0, 4.0, "Lanjut.")]
+    assert render_srt(events) == (
+        "1\n00:00:01,000 --> 00:00:02,500\nHalo semua!\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\nLanjut.\n"
+    )

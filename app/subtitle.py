@@ -115,3 +115,59 @@ def _cps_flags(events, threshold: float) -> list[dict]:
             flags.append({"index": index, "start": round(ev.start, 2),
                           "cps": round(cps, 1), "text": ev.text})
     return flags
+
+def format_ass_time(seconds: float) -> str:
+    total_cs = round(seconds * 100)
+    cs = total_cs % 100
+    s = (total_cs // 100) % 60
+    m = (total_cs // 6000) % 60
+    h = total_cs // 360000
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def format_srt_time(seconds: float) -> str:
+    total_ms = round(seconds * 1000)
+    ms = total_ms % 1000
+    s = (total_ms // 1000) % 60
+    m = (total_ms // 60000) % 60
+    h = total_ms // 3600000
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+_FALLBACK_EVENTS_HEADER = [
+    "", "[Events]",
+    "Format: Layer, Start, End, Style, Actor, "
+    "MarginL, MarginR, MarginV, Effect, Text",
+]
+
+
+def render_ass(events: list[SubEvent], template_text: str) -> str:
+    """Copy the template verbatim through the [Events] Format line, then
+    append Dialogue lines (§8). Narration -> Narrator style."""
+    lines = template_text.rstrip().splitlines()
+    header = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "[events]":
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip().lower().startswith("format:"):
+                    header = lines[:j + 1]
+                    break
+            break
+    if header is None:
+        header = lines + _FALLBACK_EVENTS_HEADER
+
+    out = list(header)
+    for ev in events:
+        style = "Narrator" if ev.type == "narration" else "Default"
+        text = ev.text.replace("\r\n", "\n").replace("\n", "\\N")
+        out.append(f"Dialogue: 0,{format_ass_time(ev.start)},"
+                   f"{format_ass_time(ev.end)},{style},,0,0,0,,{text}")
+    return "\n".join(out) + "\n"
+
+
+def render_srt(events: list[SubEvent]) -> str:
+    blocks = []
+    for index, ev in enumerate(events, start=1):
+        blocks.append(f"{index}\n{format_srt_time(ev.start)} --> "
+                      f"{format_srt_time(ev.end)}\n{ev.text}\n")
+    return "\n".join(blocks)
