@@ -73,3 +73,48 @@ def test_build_transcribe_prompts_injects_context():
     assert "MM:SS.mmm" in user
     assert "JSON" in user
     assert "narration" in user
+
+
+from app.audio import PlannedChunk
+from app.transcribe import merge_transcripts
+
+
+def U(id, start, end, ja, type="dialogue"):
+    return Utterance(id=id, start=start, end=end, type=type, ja=ja)
+
+
+def test_merge_shifts_by_offset_and_renumbers():
+    chunks = [PlannedChunk(1, 0.0, 700.0, False),
+              PlannedChunk(2, 700.0, 1400.0, False)]
+    per_chunk = [
+        [U(1, 1.0, 2.0, "あ"), U(2, 5.0, 6.0, "い")],
+        [U(1, 0.5, 1.5, "う")],
+    ]
+    merged = merge_transcripts(per_chunk, chunks)
+    assert [u.id for u in merged] == [1, 2, 3]
+    assert merged[2].start == pytest.approx(700.5)
+    assert merged[2].ja == "う"
+
+
+def test_merge_dedupes_overlap_zone():
+    # chunk 2 re-covers the last 4s of chunk 1 (hard cut at 840)
+    chunks = [PlannedChunk(1, 0.0, 840.0, False),
+              PlannedChunk(2, 836.0, 1400.0, True)]
+    per_chunk = [
+        [U(1, 830.0, 833.0, "今日は楽しかったですね")],
+        [U(1, 0.2, 2.8, "今日は楽しかったですね。"),  # dupe (similar text)
+         U(2, 10.0, 12.0, "次のコーナーです")],
+    ]
+    merged = merge_transcripts(per_chunk, chunks)
+    assert [u.ja for u in merged] == ["今日は楽しかったですね", "次のコーナーです"]
+
+
+def test_merge_keeps_different_text_in_overlap_zone():
+    chunks = [PlannedChunk(1, 0.0, 840.0, False),
+              PlannedChunk(2, 836.0, 1400.0, True)]
+    per_chunk = [
+        [U(1, 830.0, 833.0, "全然違う話")],
+        [U(1, 0.2, 2.8, "新しいセリフです")],
+    ]
+    merged = merge_transcripts(per_chunk, chunks)
+    assert len(merged) == 2

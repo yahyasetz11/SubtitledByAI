@@ -112,3 +112,40 @@ def build_transcribe_prompts(context_md: str, members_md: str) -> tuple[str, str
         "- Teks layar (telop) tidak ditranskripsikan kecuali dibacakan."
     )
     return system, user
+
+
+SIMILARITY_THRESHOLD = 0.8
+OVERLAP_MARGIN_SECONDS = 2.0
+
+
+def _similar(a: str, b: str) -> bool:
+    return SequenceMatcher(None, a, b).ratio() >= SIMILARITY_THRESHOLD
+
+
+def merge_transcripts(per_chunk: list[list[Utterance]],
+                      chunks: list["audio.PlannedChunk"]) -> list[Utterance]:
+    """Shift utterances to the absolute timeline; dedupe hard-cut overlaps."""
+    merged: list[Utterance] = []
+    for utterances, chunk in zip(per_chunk, chunks):
+        shifted = [replace(u, start=u.start + chunk.start, end=u.end + chunk.start)
+                   for u in utterances]
+        if chunk.overlap_prev and merged:
+            zone_end = chunk.start + audio.OVERLAP_SECONDS + OVERLAP_MARGIN_SECONDS
+            tail = merged[-8:]
+            shifted = [u for u in shifted
+                       if not (u.start <= zone_end
+                               and any(_similar(u.ja, t.ja) for t in tail))]
+        merged.extend(shifted)
+    return [replace(u, id=i) for i, u in enumerate(merged, start=1)]
+
+
+def save_transcript(utterances: list[Utterance], path: Path) -> None:
+    path.write_text(
+        json.dumps([u.to_dict() for u in utterances], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_transcript(path: Path) -> list[Utterance]:
+    return [Utterance.from_dict(d)
+            for d in json.loads(path.read_text(encoding="utf-8"))]
