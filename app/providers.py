@@ -15,6 +15,15 @@ class ConfigError(Exception):
     """Startup configuration problem; message is shown to the user."""
 
 
+def _clean_cookies_value(raw: str | None) -> str | None:
+    """python-dotenv keeps the comment as the value for lines like
+    `YTDLP_COOKIES_FILE=   # komentar`; treat such values as unset."""
+    value = (raw or "").strip()
+    if not value or value.startswith("#"):
+        return None
+    return value
+
+
 @dataclass
 class Config:
     gemini_api_key: str
@@ -47,7 +56,7 @@ class Config:
                 "openai": os.getenv("TRANSLATE_MODEL_OPENAI", "gpt-4o"),
                 "anthropic": os.getenv("TRANSLATE_MODEL_ANTHROPIC", "claude-sonnet-4-6"),
             },
-            ytdlp_cookies_file=(os.getenv("YTDLP_COOKIES_FILE") or "").strip() or None,
+            ytdlp_cookies_file=_clean_cookies_value(os.getenv("YTDLP_COOKIES_FILE")),
             sub_min_duration=float(os.getenv("SUB_MIN_DURATION", "0.7")),
             sub_max_duration=float(os.getenv("SUB_MAX_DURATION", "7.5")),
             sub_merge_gap=float(os.getenv("SUB_MERGE_GAP", "0.5")),

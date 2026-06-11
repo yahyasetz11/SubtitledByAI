@@ -121,3 +121,10 @@ def test_build_ytdlp_args_mp4_and_cookies():
     assert "bestvideo*+bestaudio/best" in args
     assert "mp4" in args
     assert "--cookies" in args and "c.txt" in args
+
+
+def test_build_ytdlp_args_enables_remote_ejs():
+    args = build_ytdlp_args("https://youtu.be/x", "out/source.%(ext)s",
+                            save_mp4=False, cookies_file=None)
+    assert "--remote-components" in args
+    assert "ejs:github" in args

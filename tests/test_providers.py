@@ -40,6 +40,14 @@ def test_config_env_overrides(monkeypatch):
     assert cfg.available_providers()["openai"] is True
 
 
+def test_config_ignores_comment_as_cookies_value(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("YTDLP_COOKIES_FILE",
+                       "# opsional, untuk video region-locked/membership")
+    cfg = Config.load()
+    assert cfg.ytdlp_cookies_file is None
+
+
 def test_config_missing_gemini_key_raises(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ConfigError, match="GEMINI_API_KEY"):

@@ -128,6 +128,7 @@ def build_cut_args(src: str, dst: str, start: float, end: float) -> list[str]:
 def build_ytdlp_args(url: str, output_template: str, *, save_mp4: bool,
                      cookies_file: str | None) -> list[str]:
     args = [sys.executable, "-m", "yt_dlp", "--no-playlist",
+            "--remote-components", "ejs:github",
             "-o", output_template]
     if save_mp4:
         args += ["-f", "bestvideo*+bestaudio/best", "--merge-output-format", "mp4"]
