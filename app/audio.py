@@ -1,4 +1,4 @@
-﻿"""Audio: extraction, normalization, silencedetect, chunking (ffmpeg/yt-dlp)."""
+"""Audio: extraction, normalization, silencedetect, chunking (ffmpeg/yt-dlp)."""
 from __future__ import annotations
 
 import json
