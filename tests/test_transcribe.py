@@ -118,3 +118,76 @@ def test_merge_keeps_different_text_in_overlap_zone():
     ]
     merged = merge_transcripts(per_chunk, chunks)
     assert len(merged) == 2
+
+
+from app.providers import LLMResponse
+from app.transcribe import transcribe_chunk
+
+
+class FakeGemini:
+    """Returns queued LLMResponses; records uploads."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.uploads = []
+        self.model = "gemini-2.5-pro"
+
+    def upload_audio(self, path):
+        self.uploads.append(path)
+        return f"file-ref:{path}"
+
+    def generate(self, system, user, audio=None):
+        return self.responses.pop(0)
+
+
+class FakeTracker:
+    def __init__(self):
+        self.calls = []
+
+    def add(self, model, input_tokens, output_tokens):
+        self.calls.append((model, input_tokens, output_tokens))
+
+
+GOOD = LLMResponse(text=VALID, input_tokens=100, output_tokens=50)
+HALF = LLMResponse(
+    text='[{"id":1,"start":"00:01.0","end":"00:02.0","type":"dialogue","ja":"あ"}]',
+    input_tokens=10, output_tokens=5)
+
+
+def test_transcribe_chunk_happy_path(tmp_path):
+    gemini = FakeGemini([GOOD])
+    tracker = FakeTracker()
+    utts = transcribe_chunk(gemini, tmp_path / "chunk_001.mp3",
+                            "sys", "user", tracker)
+    assert len(utts) == 2
+    assert tracker.calls == [("gemini-2.5-pro", 100, 50)]
+    assert gemini.uploads == [tmp_path / "chunk_001.mp3"]
+
+
+def test_transcribe_chunk_splits_on_truncation(tmp_path, monkeypatch):
+    truncated = LLMResponse(text=VALID, input_tokens=1, output_tokens=1,
+                            truncated=True)
+    gemini = FakeGemini([truncated, HALF, HALF])
+
+    def fake_split(path):
+        return (path.with_name(path.stem + "_a.mp3"),
+                path.with_name(path.stem + "_b.mp3"), 420.0)
+
+    monkeypatch.setattr("app.transcribe.audio.split_audio", fake_split)
+    utts = transcribe_chunk(gemini, tmp_path / "chunk_001.mp3",
+                            "sys", "user", FakeTracker())
+    assert len(utts) == 2
+    assert utts[1].start == pytest.approx(421.0)  # second half shifted by 420
+    assert len(gemini.uploads) == 3
+
+
+def test_transcribe_chunk_gives_up_after_max_depth(tmp_path, monkeypatch):
+    bad = LLMResponse(text="not json", input_tokens=1, output_tokens=1)
+    gemini = FakeGemini([bad] * 7)
+    monkeypatch.setattr(
+        "app.transcribe.audio.split_audio",
+        lambda p: (p.with_name(p.stem + "_a.mp3"),
+                   p.with_name(p.stem + "_b.mp3"), 60.0))
+    with pytest.raises(TranscriptParseError):
+        transcribe_chunk(gemini, tmp_path / "chunk_001.mp3",
+                         "sys", "user", FakeTracker())

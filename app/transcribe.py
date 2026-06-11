@@ -149,3 +149,30 @@ def save_transcript(utterances: list[Utterance], path: Path) -> None:
 def load_transcript(path: Path) -> list[Utterance]:
     return [Utterance.from_dict(d)
             for d in json.loads(path.read_text(encoding="utf-8"))]
+
+
+MAX_SPLIT_DEPTH = 2
+
+
+def transcribe_chunk(gemini, chunk_path: Path, system: str, user: str,
+                     tracker, depth: int = 0) -> list[Utterance]:
+    """Transcribe one audio chunk; timestamps relative to the chunk start."""
+    audio_ref = gemini.upload_audio(chunk_path)
+    response = call_with_retries(
+        lambda: gemini.generate(system=system, user=user, audio=audio_ref))
+    if tracker is not None:
+        tracker.add(gemini.model, response.input_tokens, response.output_tokens)
+    try:
+        if response.truncated:
+            raise TranscriptParseError("output terpotong (MAX_TOKENS)")
+        return parse_transcript(response.text)
+    except TranscriptParseError:
+        if depth >= MAX_SPLIT_DEPTH:
+            raise
+        left, right, offset = audio.split_audio(chunk_path)
+        first = transcribe_chunk(gemini, left, system, user, tracker, depth + 1)
+        second = transcribe_chunk(gemini, right, system, user, tracker, depth + 1)
+        shifted = [replace(u, start=u.start + offset, end=u.end + offset)
+                   for u in second]
+        combined = first + shifted
+        return [replace(u, id=i) for i, u in enumerate(combined, start=1)]
