@@ -1,7 +1,6 @@
-# Sokomagattara SubGen
+# AI SubGen
 
-Aplikasi localhost untuk membuat subtitle Bahasa Indonesia (.ass / .srt)
-dari episode *Soko Magattara, Sakurazaka?* — transkripsi Jepang via
+Aplikasi localhost untuk membuat subtitle Bahasa Indonesia (.ass / .srt) — transkripsi Jepang via
 Gemini 2.5 Pro, terjemahan via Gemini 2.5 Flash (atau GPT-4o / Claude).
 
 ## Persiapan
