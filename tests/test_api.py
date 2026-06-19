@@ -118,3 +118,122 @@ def test_retry_requeues_job(client, fake_run):
 
 def test_unknown_job_404(client):
     assert client.get("/api/jobs/nope").status_code == 404
+
+
+def test_get_context_returns_context_md(client, monkeypatch, tmp_path):
+    ctx_dir = tmp_path / "context"
+    ctx_dir.mkdir()
+    (ctx_dir / "context.md").write_text("# Acara Context", encoding="utf-8")
+    monkeypatch.setattr(main, "CONTEXT_DIR", ctx_dir)
+    resp = client.get("/api/context")
+    assert resp.status_code == 200
+    assert resp.json()["context_md"] == "# Acara Context"
+
+
+def test_create_job_stores_additional_context_and_override(client, fake_run):
+    resp = post_url_job(client, additional_context="Fishing vlog",
+                        context_override="Custom context override")
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params.get("additional_context") == "Fishing vlog"
+    assert job.params.get("context_override") == "Custom context override"
+
+
+# ---------------------------------------------------------------------------
+# Multi-key / active-key feature
+# ---------------------------------------------------------------------------
+
+def test_config_includes_gemini_keys_and_active_key(client, monkeypatch):
+    monkeypatch.setattr("app.audio.ensure_ffmpeg", lambda: True)
+    monkeypatch.setenv("GEMINI_API_KEY_PERSONAL", "g-personal")
+    body = client.get("/api/config").json()
+    assert "Default" in body["gemini_keys"]
+    assert "PERSONAL" in body["gemini_keys"]
+    assert body["active_gemini_key"] == "Default"
+
+
+def test_put_active_key_switches_and_reflects_in_config(client, monkeypatch):
+    monkeypatch.setattr("app.audio.ensure_ffmpeg", lambda: True)
+    monkeypatch.setenv("GEMINI_API_KEY_WORK", "g-work")
+    resp = client.put("/api/config/active-key", json={"label": "WORK"})
+    assert resp.status_code == 200
+    body = client.get("/api/config").json()
+    assert body["active_gemini_key"] == "WORK"
+
+
+def test_put_active_key_invalid_label_returns_422(client, monkeypatch):
+    resp = client.put("/api/config/active-key", json={"label": "DOESNOTEXIST"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Continue last session — GET /api/sessions
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+
+def _write_job(tmp_path, job_id, status, original_filename=None, url=None):
+    job_dir = tmp_path / job_id
+    (job_dir / "chunks").mkdir(parents=True, exist_ok=True)
+    params = {"source": "file" if original_filename else "url",
+              "url": url, "translator": "gemini", "output_format": "ass",
+              "save_mp4": False, "original_filename": original_filename,
+              "context_override": None, "additional_context": None}
+    meta = {"id": job_id, "params": params, "status": status,
+            "error": None, "events": []}
+    (job_dir / "job.json").write_text(
+        _json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+
+def test_sessions_empty_when_no_output_dirs(client):
+    body = client.get("/api/sessions").json()
+    assert body["sessions"] == []
+
+
+def test_sessions_excludes_done_jobs(client, tmp_path):
+    _write_job(tmp_path, "20260618-100000-aaaaaa", "done", original_filename="ep1.mp4")
+    body = client.get("/api/sessions").json()
+    assert body["sessions"] == []
+
+
+def test_sessions_returns_failed_and_running(client, tmp_path):
+    _write_job(tmp_path, "20260618-100000-aaaaaa", "failed", original_filename="ep1.mp4")
+    _write_job(tmp_path, "20260618-110000-bbbbbb", "running", original_filename="ep2.mp4")
+    _write_job(tmp_path, "20260618-120000-cccccc", "done",   original_filename="ep3.mp4")
+    sessions = client.get("/api/sessions").json()["sessions"]
+    ids = [s["id"] for s in sessions]
+    assert "20260618-100000-aaaaaa" in ids
+    assert "20260618-110000-bbbbbb" in ids
+    assert "20260618-120000-cccccc" not in ids
+
+
+def test_sessions_sorted_newest_first(client, tmp_path):
+    _write_job(tmp_path, "20260618-080000-aaaaaa", "failed", original_filename="old.mp4")
+    _write_job(tmp_path, "20260618-120000-bbbbbb", "failed", original_filename="new.mp4")
+    sessions = client.get("/api/sessions").json()["sessions"]
+    assert sessions[0]["id"] == "20260618-120000-bbbbbb"
+    assert sessions[1]["id"] == "20260618-080000-aaaaaa"
+
+
+def test_sessions_label_uses_original_filename(client, tmp_path):
+    _write_job(tmp_path, "20260618-121111-aaaaaa", "failed", original_filename="rabbit-island.mp3")
+    session = client.get("/api/sessions").json()["sessions"][0]
+    assert "2026-06-18 12:11" in session["label"]
+    assert "rabbit-island.mp3" in session["label"]
+    assert "failed" in session["label"]
+
+
+def test_sessions_label_uses_url_when_no_filename(client, tmp_path):
+    _write_job(tmp_path, "20260618-121111-aaaaaa", "failed",
+               url="https://youtu.be/abc123")
+    session = client.get("/api/sessions").json()["sessions"][0]
+    assert "youtu.be" in session["label"]
+
+
+def test_sessions_truncates_long_filename(client, tmp_path):
+    long_name = "A" * 80 + ".mp4"
+    _write_job(tmp_path, "20260618-121111-aaaaaa", "failed", original_filename=long_name)
+    session = client.get("/api/sessions").json()["sessions"][0]
+    assert len(session["label"]) < 120  # label stays reasonable length
+    assert "..." in session["label"]

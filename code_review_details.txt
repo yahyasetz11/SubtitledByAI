@@ -1,0 +1,178 @@
+=== finish() function ===
+function finish(result) {
+  $("usage").textContent = result.usage.line || "";
+  for (const name of result.files) {
+    const a = document.createElement("a");
+    a.href = "/api/jobs/" + jobId + "/files/" + name;
+    a.textContent = "⬇ " + name;
+    $("downloads").appendChild(a);
+  }
+}
+
+=== listen() function ===
+function listen(id) {
+  if (es) es.close();
+  es = new EventSource("/api/jobs/" + id + "/events");
+  es.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    if (ev.status === "error") {
+      logLine("[" + ev.stage + "] GAGAL: " + (ev.message || ""), "error");
+      $("retry-btn").classList.remove("hidden");
+      return;
+    }
+    logLine("[" + ev.stage + "] " + (ev.message || ev.status));
+    if (ev.stage === "done" && ev.result) finish(ev.result);
+  };
+  es.addEventListener("end", () => es.close());
+  es.onerror = () => {};  // the server closes the stream when the job ends
+}
+
+=== href assignment ===
+a.href = "
+
+=== submit handler ===
+addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const source =
+    document.querySelector('input[name="source"]:checked').value;
+  const fd = new FormData();
+  fd.append("source", source);
+  fd.append("translator", $("translator").value);
+  fd.append("output_format", $("output_format").value);
+  if (source === "url") {
+    fd.append("url", $("url").value.trim());
+    fd.append("save_mp4", $("save_mp4").checked);
+  } else {
+    if (!$("file").files[0]) { alert("Pilih file dulu."); return; }
+    fd.append("file", $("file").files[0]);
+  }
+  const resp = await fetch("/api/jobs", { method: "POST", body: fd });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.detail || ("Gagal membuat job (HTTP " + resp.status + ")"));
+    return;
+  }
+  jobId = (await resp.json()).job_id;
+  resetProgress();
+  logLine("Job " + jobId + " dimulai...");
+  listen(jobId);
+})
+
+=== retry handler ===
+retry-btn" class="hidden" type="button">
+      Coba lagi (lanjut dari checkpoint)</button></p>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let jobId = null;
+let es = null;
+
+const PROVIDER_LABELS = { gemini: "Gemini", openai: "OpenAI",
+                          anthropic: "Anthropic Claude" };
+
+function showBanner(msg) {
+  const b = $("config-banner");
+  b.textContent = msg;
+  b.style.display = "block";
+}
+
+async function loadConfig() {
+  let cfg;
+  try {
+    cfg = await (await fetch("/api/config")).json();
+  } catch (e) {
+    showBanner("Tidak bisa menghubungi server: " + e);
+    $("start-btn").disabled = true;
+    return;
+  }
+  if (!cfg.ok) {
+    showBanner(cfg.error);
+    $("start-btn").disabled = true;
+    return;
+  }
+  if (!cfg.ffmpeg) {
+    showBanner("ffmpeg/ffprobe tidak ditemukan di PATH. " +
+               "Install: winget install Gyan.FFmpeg lalu restart terminal.");
+    $("start-btn").disabled = true;
+  }
+  const sel = $("translator");
+  for (const [prov, available] of Object.entries(cfg.providers)) {
+    if (!available) continue;
+    const opt = document.createElement("option");
+    opt.value = prov;
+    opt.textContent = (PROVIDER_LABELS[prov] || prov) +
+                      " — " + cfg.translate_models[prov];
+    sel.appendChild(opt);
+  }
+}
+
+function logLine(text, cls) {
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  $("log").appendChild(div);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+function resetProgress() {
+  $("progress-card").classList.remove("hidden");
+  $("log").innerHTML = "";
+  $("usage").textContent = "";
+  $("downloads").innerHTML = "";
+  $("retry-btn").classList.add("hidden");
+}
+
+function finish(result) {
+  $("usage").textContent = result.usage.line || "";
+  for (const name of result.files) {
+    const a = document.createElement("a");
+    a.href = "/api/jobs/" + jobId + "/files/" + name;
+    a.textContent = "⬇ " + name;
+    $("downloads").appendChild(a);
+  }
+}
+
+function listen(id) {
+  if (es) es.close();
+  es = new EventSource("/api/jobs/" + id + "/events");
+  es.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    if (ev.status === "error") {
+      logLine("[" + ev.stage + "] GAGAL: " + (ev.message || ""), "error");
+      $("retry-btn").classList.remove("hidden");
+      return;
+    }
+    logLine("[" + ev.stage + "] " + (ev.message || ev.status));
+    if (ev.stage === "done" && ev.result) finish(ev.result);
+  };
+  es.addEventListener("end", () => es.close());
+  es.onerror = () => {};  // the server closes the stream when the job ends
+}
+
+$("job-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const source =
+    document.querySelector('input[name="source"]:checked').value;
+  const fd = new FormData();
+  fd.append("source", source);
+  fd.append("translator", $("translator").value);
+  fd.append("output_format", $("output_format").value);
+  if (source === "url") {
+    fd.append("url", $("url").value.trim());
+    fd.append("save_mp4", $("save_mp4").checked);
+  } else {
+    if (!$("file").files[0]) { alert("Pilih file dulu."); return; }
+    fd.append("file", $("file").files[0]);
+  }
+  const resp = await fetch("/api/jobs", { method: "POST", body: fd });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.detail || ("Gagal membuat job (HTTP " + resp.status + ")"));
+    return;
+  }
+  jobId = (await resp.json()).job_id;
+  resetProgress();
+  logLine("Job " + jobId + " dimulai...");
+  listen(jobId);
+})

@@ -239,3 +239,60 @@ def test_make_translator_rejects_unknown_provider(monkeypatch):
     cfg = Config.load()
     with pytest.raises(ConfigError):
         make_translator(cfg, "deepseek")
+
+
+# ---------------------------------------------------------------------------
+# Multi-key / active-key feature
+# ---------------------------------------------------------------------------
+
+from app.providers import get_all_gemini_keys, get_active_gemini_label, set_active_gemini_key
+
+
+def test_get_all_gemini_keys_default_only(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.delenv("GEMINI_API_KEY_PERSONAL", raising=False)
+    assert get_all_gemini_keys() == {"Default": "g-default"}
+
+
+def test_get_all_gemini_keys_includes_named_labels(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_PERSONAL", "g-personal")
+    monkeypatch.setenv("GEMINI_API_KEY_WORK", "g-work")
+    keys = get_all_gemini_keys()
+    assert keys == {"Default": "g-default", "PERSONAL": "g-personal", "WORK": "g-work"}
+
+
+def test_get_all_gemini_keys_skips_empty_values(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_EMPTY", "")
+    keys = get_all_gemini_keys()
+    assert "EMPTY" not in keys
+
+
+def test_get_active_gemini_label_is_default_on_startup():
+    assert get_active_gemini_label() == "Default"
+
+
+def test_set_active_gemini_key_changes_config_load_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_PERSONAL", "g-personal")
+    set_active_gemini_key("PERSONAL")
+    assert get_active_gemini_label() == "PERSONAL"
+    cfg = Config.load()
+    assert cfg.gemini_api_key == "g-personal"
+
+
+def test_set_active_gemini_key_invalid_label_raises(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.delenv("GEMINI_API_KEY_GHOST", raising=False)
+    with pytest.raises(ConfigError, match="GHOST"):
+        set_active_gemini_key("GHOST")
+
+
+def test_set_active_gemini_key_to_default_restores_base_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_PERSONAL", "g-personal")
+    set_active_gemini_key("PERSONAL")
+    set_active_gemini_key("Default")
+    cfg = Config.load()
+    assert cfg.gemini_api_key == "g-default"

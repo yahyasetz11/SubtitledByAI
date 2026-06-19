@@ -91,7 +91,8 @@ def parse_transcript(text: str) -> list[Utterance]:
     return utterances
 
 
-def build_transcribe_prompts(context_md: str, members_md: str) -> tuple[str, str]:
+def build_transcribe_prompts(context_md: str, members_md: str,
+                             additional_context: str | None = None) -> tuple[str, str]:
     system = (
         "Kamu adalah transcriber profesional untuk audio variety show Jepang "
         "(Soko Magattara, Sakurazaka?). Gunakan konteks berikut untuk menulis "
@@ -99,6 +100,8 @@ def build_transcribe_prompts(context_md: str, members_md: str) -> tuple[str, str
         "=== KONTEKS ACARA ===\n" + context_md +
         "\n\n=== ROSTER MEMBER ===\n" + members_md
     )
+    if additional_context:
+        system += "\n\n=== KONTEKS VIDEO ===\n" + additional_context
     user = (
         "Transkripsikan audio terlampir per ujaran ke bahasa Jepang.\n"
         "Balas HANYA array JSON (tanpa teks lain) dengan skema per item:\n"
@@ -155,9 +158,12 @@ MAX_SPLIT_DEPTH = 2
 
 
 def transcribe_chunk(gemini, chunk_path: Path, system: str, user: str,
-                     tracker, depth: int = 0) -> list[Utterance]:
+                     tracker, depth: int = 0,
+                     on_upload_done=None) -> list[Utterance]:
     """Transcribe one audio chunk; timestamps relative to the chunk start."""
     audio_ref = gemini.upload_audio(chunk_path)
+    if on_upload_done is not None:
+        on_upload_done()
     response = call_with_retries(
         lambda: gemini.generate(system=system, user=user, audio=audio_ref))
     if tracker is not None:

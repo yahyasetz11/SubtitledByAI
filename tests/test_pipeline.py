@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app import pipeline
+from app import pipeline, transcribe
 from app.transcribe import Utterance
 
 FAKE_UTTS = [
@@ -32,7 +32,7 @@ def env(tmp_path, monkeypatch):
         dst.write_bytes(b"chunk-data")
 
     def fake_transcribe_chunk(gemini, chunk_path, system, user, tracker,
-                              depth=0):
+                              depth=0, on_upload_done=None):
         counters["transcribe"] += 1
         return FAKE_UTTS
 
@@ -145,3 +145,29 @@ def test_load_job_from_disk(env):
     assert loaded.params["url"] == "https://youtu.be/x"
     assert loaded.status == "done"
     assert pipeline.load_job("nonexistent") is None
+
+
+def test_additional_context_passed_to_prompt_builders(env, monkeypatch):
+    received = {}
+    orig = transcribe.build_transcribe_prompts
+    def spy(ctx, members, additional_context=None):
+        received["additional_context"] = additional_context
+        return orig(ctx, members, additional_context=additional_context)
+    monkeypatch.setattr("app.transcribe.build_transcribe_prompts", spy)
+
+    job = pipeline.create_job(make_params(additional_context="Fishing vlog"))
+    pipeline.run_job(job.id)
+    assert received.get("additional_context") == "Fishing vlog"
+
+
+def test_context_override_used_in_prompt_builders(env, monkeypatch):
+    received = {}
+    orig = transcribe.build_transcribe_prompts
+    def spy(ctx, members, additional_context=None):
+        received["context_md"] = ctx
+        return orig(ctx, members, additional_context=additional_context)
+    monkeypatch.setattr("app.transcribe.build_transcribe_prompts", spy)
+
+    job = pipeline.create_job(make_params(context_override="OVERRIDE-CTX"))
+    pipeline.run_job(job.id)
+    assert received.get("context_md") == "OVERRIDE-CTX"

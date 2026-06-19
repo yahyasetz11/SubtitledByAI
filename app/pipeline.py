@@ -7,6 +7,8 @@ additionally checkpoints per chunk and translation per batch.
 from __future__ import annotations
 
 import json
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -191,22 +193,63 @@ def _stage_transcribe(job: Job, cfg, tracker,
               f"{len(utterances)} ujaran (checkpoint)")
         return utterances
     context_md, members_md = _read_context()
-    system, user = transcribe.build_transcribe_prompts(context_md, members_md)
+    if job.params.get("context_override"):
+        context_md = job.params["context_override"]
+    additional_context = job.params.get("additional_context") or None
+    system, user = transcribe.build_transcribe_prompts(context_md, members_md,
+                                                       additional_context=additional_context)
     gemini = providers.make_transcriber(cfg)
-    _emit(job, "transcribe", "start", f"transkripsi {len(chunks)} chunk")
+    n = len(chunks)
+    _emit(job, "transcribe", "start", f"transkripsi {n} chunk")
     per_chunk: list[list[transcribe.Utterance]] = []
     for c in chunks:
         ckpt = job.dir / "chunks" / f"transcript_{c.index:03d}.json"
         if ckpt.exists():
             utts = transcribe.load_transcript(ckpt)
         else:
+            idx = c.index
             chunk_path = job.dir / "chunks" / f"chunk_{c.index:03d}.mp3"
-            utts = transcribe.transcribe_chunk(gemini, chunk_path, system,
-                                               user, tracker)
+
+            _emit(job, "transcribe", "progress",
+                  f"mengunggah audio chunk {idx}/{n}...")
+
+            ctx: dict = {
+                "stop": threading.Event(),
+                "generate_started": threading.Event(),
+                "t0": time.monotonic(),
+                "idx": idx,
+                "n": n,
+            }
+
+            def _heartbeat(ctx: dict = ctx) -> None:
+                while not ctx["stop"].wait(30):
+                    if ctx["generate_started"].is_set():
+                        elapsed = int(time.monotonic() - ctx["t0"])
+                        _emit(job, "transcribe", "progress",
+                              f"masih menunggu Gemini chunk "
+                              f"{ctx['idx']}/{ctx['n']}... ({elapsed}s elapsed)")
+
+            def _on_upload_done(ctx: dict = ctx) -> None:
+                elapsed = int(time.monotonic() - ctx["t0"])
+                ctx["generate_started"].set()
+                _emit(job, "transcribe", "progress",
+                      f"upload selesai ({elapsed}s), "
+                      f"menunggu respons Gemini chunk {ctx['idx']}/{ctx['n']}...")
+
+            hb = threading.Thread(target=_heartbeat, daemon=True)
+            hb.start()
+            try:
+                utts = transcribe.transcribe_chunk(
+                    gemini, chunk_path, system, user, tracker,
+                    on_upload_done=_on_upload_done)
+            finally:
+                ctx["stop"].set()
+                hb.join(timeout=2)
+
             transcribe.save_transcript(utts, ckpt)
         per_chunk.append(utts)
         _emit(job, "transcribe", "progress",
-              f"chunk {c.index}/{len(chunks)} selesai")
+              f"chunk {c.index}/{n} selesai")
     merged = transcribe.merge_transcripts(per_chunk, chunks)
     transcribe.save_transcript(merged, final_path)
     _emit(job, "transcribe", "done", f"{len(merged)} ujaran")
@@ -221,7 +264,11 @@ def _stage_translate(job: Job, cfg, tracker,
         _emit(job, "translate", "done", f"{len(rows)} baris (checkpoint)")
         return rows
     context_md, members_md = _read_context()
-    system = translate.build_translate_system(context_md, members_md)
+    if job.params.get("context_override"):
+        context_md = job.params["context_override"]
+    additional_context = job.params.get("additional_context") or None
+    system = translate.build_translate_system(context_md, members_md,
+                                              additional_context=additional_context)
     client = providers.make_translator(cfg, job.params["translator"])
     _emit(job, "translate", "start",
           f"terjemahkan {len(utterances)} ujaran via "

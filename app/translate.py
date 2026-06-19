@@ -57,14 +57,18 @@ def validate_alignment(mapping: dict[int, str],
     return "; ".join(problems) if problems else None
 
 
-def build_translate_system(context_md: str, members_md: str) -> str:
-    return (
+def build_translate_system(context_md: str, members_md: str,
+                           additional_context: str | None = None) -> str:
+    result = (
         "Kamu adalah penerjemah subtitle JP->ID untuk variety show "
         "Soko Magattara, Sakurazaka?. Patuhi style guide, glossary, dan "
         "ejaan nama persis seperti referensi berikut.\n\n"
         "=== KONTEKS & STYLE GUIDE ===\n" + context_md +
         "\n\n=== ROSTER MEMBER ===\n" + members_md
     )
+    if additional_context:
+        result += "\n\n=== KONTEKS VIDEO ===\n" + additional_context
+    return result
 
 
 def _build_user_prompt(utterances: list[Utterance],

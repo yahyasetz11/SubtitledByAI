@@ -75,6 +75,12 @@ def test_build_transcribe_prompts_injects_context():
     assert "narration" in user
 
 
+def test_build_transcribe_prompts_includes_additional_context():
+    system, _ = build_transcribe_prompts("CTX", "MEMBERS",
+                                         additional_context="Vlog Moriya Rena fishing")
+    assert "Vlog Moriya Rena fishing" in system
+
+
 from app.audio import PlannedChunk
 from app.transcribe import merge_transcripts
 

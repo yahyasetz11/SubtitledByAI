@@ -1,0 +1,11 @@
+{
+  "em_dashes_u2014": 1,
+  "en_dashes_u2013": 0,
+  "non_ascii_count": 4,
+  "non_ascii_codepoints": [
+    "0x2192",
+    "0x2192",
+    "0x2014",
+    "0x2b07"
+  ]
+}

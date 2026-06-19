@@ -1,0 +1,257 @@
+Total lines: 3608
+3250: ### Task 18: Frontend (`static/index.html`) — §1, §3, §10
+3251: 
+3252: The entire UI in one static file: source picker (URL/upload), translator dropdown filled from `/api/config`, output format, live progress log over `EventSource`, download links, usage line, and a checkpoint-aware Retry button. No build step, no frameworks.
+3253: 
+3254: **Files:**
+3255: - Modify: `static/index.html` (replace the Task 17 placeholder entirely)
+3256: 
+3257: - [ ] **Step 1: Replace `static/index.html` with the full UI**
+3258: 
+3259: ```html
+3260: <!doctype html>
+3261: <html lang="id">
+3262: <head>
+3263: <meta charset="utf-8">
+3264: <title>Sokomagattara SubGen</title>
+3265: <meta name="viewport" content="width=device-width, initial-scale=1">
+3266: <style>
+3267:   :root { --bg:#14151a; --card:#1e2027; --text:#e8e8ea; --muted:#9aa0ae;
+3268:           --accent:#f2a7c3; --err:#ff6b6b; --ok:#7bd88f; }
+3269:   * { box-sizing: border-box; }
+3270:   body { background:var(--bg); color:var(--text); margin:0;
+3271:          font-family:"Segoe UI",system-ui,sans-serif; }
+3272:   main { max-width:760px; margin:0 auto; padding:24px 16px 64px; }
+3273:   h1 { font-size:1.5rem; margin-bottom:4px; } h1 span { color:var(--accent); }
+3274:   .muted { color:var(--muted); margin-top:0; }
+3275:   .card { background:var(--card); border-radius:10px; padding:20px;
+3276:           margin-top:16px; }
+3277:   label { display:block; margin:12px 0 4px; color:var(--muted);
+3278:           font-size:.9rem; }
+3279:   .row { display:flex; gap:24px; align-items:center; }
+3280:   .row label { display:flex; gap:6px; align-items:center; margin:0; }
+3281:   input[type=text], select { width:100%; padding:8px 10px; border-radius:6px;
+3282:     border:1px solid #333; background:#101116; color:var(--text); }
+3283:   button { background:var(--accent); color:#222; font-weight:600; border:none;
+3284:     border-radius:6px; padding:10px 22px; cursor:pointer; }
+3285:   button:disabled { opacity:.4; cursor:not-allowed; }
+3286:   #log { font-family:Consolas,monospace; font-size:.85rem;
+3287:     white-space:pre-wrap; max-height:320px; overflow-y:auto; }
+3288:   .error { color:var(--err); } .okline { color:var(--ok); }
+3289:   .banner { background:#3a1f27; border:1px solid var(--err);
+3290:     border-radius:8px; padding:12px; margin-top:16px; display:none; }
+3291:   #downloads a { display:inline-block; margin:6px 12px 0 0;
+3292:     color:var(--accent); }
+3293:   .hidden { display:none; }
+3294: </style>
+3295: </head>
+3296: <body>
+3297: <main>
+3298:   <h1>Sokomagattara <span>SubGen</span></h1>
+3299:   <p class="muted">Transkripsi JP → terjemahan ID → subtitle .ass / .srt</p>
+3300:   <div id="config-banner" class="banner"></div>
+3301: 
+3302:   <form id="job-form" class="card">
+3303:     <div class="row">
+3304:       <label><input type="radio" name="source" value="url" checked>
+3305:         YouTube URL</label>
+3306:       <label><input type="radio" name="source" value="file">
+3307:         Upload file</label>
+3308:     </div>
+3309:     <div id="url-box">
+3310:       <label for="url">URL YouTube</label>
+3311:       <input type="text" id="url"
+3312:              placeholder="https://www.youtube.com/watch?v=...">
+3313:       <label><input type="checkbox" id="save_mp4">
+3314:         Simpan video .mp4 (untuk ditonton dengan subtitle)</label>
+3315:     </div>
+3316:     <div id="file-box" class="hidden">
+3317:       <label for="file">File audio/video (mp3, m4a, wav, mp4, mkv)</label>
+3318:       <input type="file" id="file" accept=".mp3,.m4a,.wav,.mp4,.mkv">
+3319:     </div>
+3320:     <label for="translator">Model translasi</label>
+3321:     <select id="translator"></select>
+3322:     <label for="output_format">Format output</label>
+3323:     <select id="output_format">
+3324:       <option value="both">.ass + .srt</option>
+3325:       <option value="ass">.ass saja</option>
+3326:       <option value="srt">.srt saja</option>
+3327:     </select>
+3328:     <p><button type="submit" id="start-btn">Mulai</button></p>
+3329:   </form>
+3330: 
+3331:   <div class="card hidden" id="progress-card">
+3332:     <h2>Progress</h2>
+3333:     <div id="log"></div>
+3334:     <p id="usage" class="okline"></p>
+3335:     <div id="downloads"></div>
+3336:     <p><button id="retry-btn" class="hidden" type="button">
+3337:       Coba lagi (lanjut dari checkpoint)</button></p>
+3338:   </div>
+3339: </main>
+3340: <script>
+3341: const $ = (id) => document.getElementById(id);
+3342: let jobId = null;
+3343: let es = null;
+3344: 
+3345: const PROVIDER_LABELS = { gemini: "Gemini", openai: "OpenAI",
+3346:                           anthropic: "Anthropic Claude" };
+3347: 
+3348: function showBanner(msg) {
+3349:   const b = $("config-banner");
+3350:   b.textContent = msg;
+3351:   b.style.display = "block";
+3352: }
+3353: 
+3354: async function loadConfig() {
+3355:   let cfg;
+3356:   try {
+3357:     cfg = await (await fetch("/api/config")).json();
+3358:   } catch (e) {
+3359:     showBanner("Tidak bisa menghubungi server: " + e);
+3360:     $("start-btn").disabled = true;
+3361:     return;
+3362:   }
+3363:   if (!cfg.ok) {
+3364:     showBanner(cfg.error);
+3365:     $("start-btn").disabled = true;
+3366:     return;
+3367:   }
+3368:   if (!cfg.ffmpeg) {
+3369:     showBanner("ffmpeg/ffprobe tidak ditemukan di PATH. " +
+3370:                "Install: winget install Gyan.FFmpeg lalu restart terminal.");
+3371:     $("start-btn").disabled = true;
+3372:   }
+3373:   const sel = $("translator");
+3374:   for (const [prov, available] of Object.entries(cfg.providers)) {
+3375:     if (!available) continue;
+3376:     const opt = document.createElement("option");
+3377:     opt.value = prov;
+3378:     opt.textContent = (PROVIDER_LABELS[prov] || prov) +
+3379:                       " — " + cfg.translate_models[prov];
+3380:     sel.appendChild(opt);
+3381:   }
+3382: }
+3383: 
+3384: function logLine(text, cls) {
+3385:   const div = document.createElement("div");
+3386:   if (cls) div.className = cls;
+3387:   div.textContent = text;
+3388:   $("log").appendChild(div);
+3389:   $("log").scrollTop = $("log").scrollHeight;
+3390: }
+3391: 
+3392: function resetProgress() {
+3393:   $("progress-card").classList.remove("hidden");
+3394:   $("log").innerHTML = "";
+3395:   $("usage").textContent = "";
+3396:   $("downloads").innerHTML = "";
+3397:   $("retry-btn").classList.add("hidden");
+3398: }
+3399: 
+3400: function finish(result) {
+3401:   $("usage").textContent = result.usage.line || "";
+3402:   for (const name of result.files) {
+3403:     const a = document.createElement("a");
+3404:     a.href = "/api/jobs/" + jobId + "/files/" + name;
+3405:     a.textContent = "⬇ " + name;
+3406:     $("downloads").appendChild(a);
+3407:   }
+3408: }
+3409: 
+3410: function listen(id) {
+3411:   if (es) es.close();
+3412:   es = new EventSource("/api/jobs/" + id + "/events");
+3413:   es.onmessage = (msg) => {
+3414:     const ev = JSON.parse(msg.data);
+3415:     if (ev.status === "error") {
+3416:       logLine("[" + ev.stage + "] GAGAL: " + (ev.message || ""), "error");
+3417:       $("retry-btn").classList.remove("hidden");
+3418:       return;
+3419:     }
+3420:     logLine("[" + ev.stage + "] " + (ev.message || ev.status));
+3421:     if (ev.stage === "done" && ev.result) finish(ev.result);
+3422:   };
+3423:   es.addEventListener("end", () => es.close());
+3424:   es.onerror = () => {};  // the server closes the stream when the job ends
+3425: }
+3426: 
+3427: $("job-form").addEventListener("submit", async (e) => {
+3428:   e.preventDefault();
+3429:   const source =
+3430:     document.querySelector('input[name="source"]:checked').value;
+3431:   const fd = new FormData();
+3432:   fd.append("source", source);
+3433:   fd.append("translator", $("translator").value);
+3434:   fd.append("output_format", $("output_format").value);
+3435:   if (source === "url") {
+3436:     fd.append("url", $("url").value.trim());
+3437:     fd.append("save_mp4", $("save_mp4").checked);
+3438:   } else {
+3439:     if (!$("file").files[0]) { alert("Pilih file dulu."); return; }
+3440:     fd.append("file", $("file").files[0]);
+3441:   }
+3442:   const resp = await fetch("/api/jobs", { method: "POST", body: fd });
+3443:   if (!resp.ok) {
+3444:     const err = await resp.json().catch(() => ({}));
+3445:     alert(err.detail || ("Gagal membuat job (HTTP " + resp.status + ")"));
+3446:     return;
+3447:   }
+3448:   jobId = (await resp.json()).job_id;
+3449:   resetProgress();
+3450:   logLine("Job " + jobId + " dimulai...");
+3451:   listen(jobId);
+3452: });
+3453: 
+3454: $("retry-btn").addEventListener("click", async () => {
+3455:   const resp = await fetch("/api/jobs/" + jobId + "/retry",
+3456:                            { method: "POST" });
+3457:   if (!resp.ok) { alert("Gagal retry."); return; }
+3458:   resetProgress();
+3459:   logLine("Job " + jobId + " diulang dari checkpoint...");
+3460:   listen(jobId);
+3461: });
+3462: 
+3463: for (const radio of document.querySelectorAll('input[name="source"]')) {
+3464:   radio.addEventListener("change", () => {
+3465:     const isUrl =
+3466:       document.querySelector('input[name="source"]:checked').value === "url";
+3467:     $("url-box").classList.toggle("hidden", !isUrl);
+3468:     $("file-box").classList.toggle("hidden", isUrl);
+3469:   });
+3470: }
+3471: 
+3472: loadConfig();
+3473: </script>
+3474: </body>
+3475: </html>
+3476: ```
+3477: 
+3478: - [ ] **Step 2: Run the whole suite (UI must not break `GET /`)**
+3479: 
+3480: Run: `python -m pytest -q`
+3481: Expected: 87 passed.
+3482: 
+3483: - [ ] **Step 3: Manual smoke test**
+3484: 
+3485: ```powershell
+3486: python -m uvicorn app.main:app --port 8000
+3487: ```
+3488: 
+3489: Open `http://127.0.0.1:8000` in a browser and verify:
+3490: - The page loads with the form visible.
+3491: - With a valid `.env`, no red banner appears and the translator dropdown lists at least "Gemini — gemini-2.5-flash".
+3492: - Without ffmpeg on PATH (or with `GEMINI_API_KEY` unset), the red banner appears and the Mulai button is disabled.
+3493: - Switching the radio to "Upload file" hides the URL box and shows the file picker.
+3494: 
+3495: Stop the server with Ctrl+C when done. (A full end-to-end run with a real episode costs ~$0.20–$0.50 and is left to the user.)
+3496: 
+3497: - [ ] **Step 4: Commit**
+3498: 
+3499: ```powershell
+3500: git add static/index.html
+3501: git commit -m "feat: single-file frontend with SSE progress and retry"
+3502: ```
+3503: 
+3504: ---
+3505: 

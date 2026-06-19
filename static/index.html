@@ -5,110 +5,677 @@
 <title>Sokomagattara SubGen</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { --bg:#14151a; --card:#1e2027; --text:#e8e8ea; --muted:#9aa0ae;
-          --accent:#f2a7c3; --err:#ff6b6b; --ok:#7bd88f; }
-  * { box-sizing: border-box; }
-  body { background:var(--bg); color:var(--text); margin:0;
-         font-family:"Segoe UI",system-ui,sans-serif; }
-  main { max-width:760px; margin:0 auto; padding:24px 16px 64px; }
-  h1 { font-size:1.5rem; margin-bottom:4px; } h1 span { color:var(--accent); }
-  .muted { color:var(--muted); margin-top:0; }
-  .card { background:var(--card); border-radius:10px; padding:20px;
-          margin-top:16px; }
-  label { display:block; margin:12px 0 4px; color:var(--muted);
-          font-size:.9rem; }
-  .row { display:flex; gap:24px; align-items:center; }
-  .row label { display:flex; gap:6px; align-items:center; margin:0; }
-  input[type=text], select { width:100%; padding:8px 10px; border-radius:6px;
-    border:1px solid #333; background:#101116; color:var(--text); }
-  button { background:var(--accent); color:#222; font-weight:600; border:none;
-    border-radius:6px; padding:10px 22px; cursor:pointer; }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  #log { font-family:Consolas,monospace; font-size:.85rem;
-    white-space:pre-wrap; max-height:320px; overflow-y:auto; }
-  .error { color:var(--err); } .okline { color:var(--ok); }
-  .banner { background:#3a1f27; border:1px solid var(--err);
-    border-radius:8px; padding:12px; margin-top:16px; display:none; }
-  #downloads a { display:inline-block; margin:6px 12px 0 0;
-    color:var(--accent); }
-  .hidden { display:none; }
+/* ── Reset ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #08080f;
+  --surface:   rgba(255,255,255,0.04);
+  --border:    rgba(255,255,255,0.08);
+  --text:      #e8e9ef;
+  --muted:     #6b7280;
+  --muted2:    #9aa0ae;
+
+  --pink:   #f472b6;
+  --violet: #a855f7;
+  --purple: #7c3aed;
+  --grad:   linear-gradient(135deg, #f472b6, #a855f7, #7c3aed);
+
+  --c-download:  #38bdf8;
+  --c-normalize: #22d3ee;
+  --c-chunk:     #fbbf24;
+  --c-transcribe:#a855f7;
+  --c-translate: #f472b6;
+  --c-format:    #7bd88f;
+  --c-done:      #7bd88f;
+  --c-error:     #ff6b6b;
+
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 20px;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  min-height: 100dvh;
+  line-height: 1.6;
+}
+
+/* ambient glow */
+body::before {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(ellipse 55% 35% at 15%  8%, rgba(168,85,247,.09) 0%, transparent 60%),
+    radial-gradient(ellipse 45% 25% at 85% 92%, rgba(244,114,182,.07) 0%, transparent 60%);
+}
+
+.app {
+  position: relative; z-index: 1;
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 44px 20px 80px;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+header { margin-bottom: 36px; }
+
+h1 {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: -.035em;
+  line-height: 1.2;
+}
+
+.gradient-text {
+  background: var(--grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.tagline { color: var(--muted2); font-size: .88rem; margin-top: 5px; }
+
+/* ── Glass card ─────────────────────────────────────────────────── */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  box-shadow: 0 8px 32px rgba(0,0,0,.35), 0 1px 0 rgba(255,255,255,.05) inset;
+}
+
+/* gradient border via padding-box trick */
+.glass.accent {
+  background: linear-gradient(#0d0d1a, #0d0d1a) padding-box,
+              var(--grad) border-box;
+  border: 1px solid transparent;
+}
+
+/* ── Banner ─────────────────────────────────────────────────────── */
+.banner {
+  background: rgba(255,107,107,.1);
+  border: 1px solid rgba(255,107,107,.3);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  color: #ff9494;
+  font-size: .875rem;
+}
+
+/* ── Form ───────────────────────────────────────────────────────── */
+.form-wrap { padding: 24px; margin-bottom: 16px; }
+
+.field { margin-bottom: 18px; }
+.field:last-child { margin-bottom: 0; }
+
+.field-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted2);
+  font-size: .75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+
+/* source toggle */
+.src-toggle {
+  display: flex; gap: 6px;
+  background: rgba(0,0,0,.35);
+  border-radius: var(--r-sm);
+  padding: 4px;
+}
+
+.src-toggle label {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  gap: 8px; padding: 9px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted2);
+  font-size: .875rem; font-weight: 500;
+  transition: all .2s;
+  user-select: none;
+}
+
+.src-toggle label.active {
+  background: var(--grad);
+  color: #fff;
+  box-shadow: 0 2px 14px rgba(168,85,247,.3);
+}
+
+.src-toggle input[type=radio] { display: none; }
+
+/* inputs */
+input[type=text], select {
+  width: 100%; padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,.3);
+  color: var(--text);
+  font-size: .9rem; font-family: inherit;
+  transition: border-color .2s, box-shadow .2s;
+  outline: none;
+}
+
+input[type=text]:focus, select:focus {
+  border-color: rgba(168,85,247,.5);
+  box-shadow: 0 0 0 3px rgba(168,85,247,.12);
+}
+
+select option { background: #1a1a2e; }
+
+input[type=file] {
+  width: 100%; padding: 28px 16px;
+  border: 2px dashed var(--border);
+  border-radius: var(--r-md);
+  background: rgba(0,0,0,.2);
+  color: var(--muted2);
+  font-size: .875rem; font-family: inherit;
+  cursor: pointer; text-align: center;
+  transition: border-color .2s, background .2s;
+}
+
+input[type=file]:hover {
+  border-color: rgba(168,85,247,.4);
+  background: rgba(168,85,247,.04);
+}
+
+.check-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 10px;
+  color: var(--muted2); font-size: .875rem; cursor: pointer;
+}
+
+.check-row input[type=checkbox] { accent-color: var(--violet); }
+
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+.divider { height: 1px; background: var(--border); margin: 20px 0; }
+
+/* ── Settings panel ─────────────────────────────────────────────── */
+.settings-panel { padding: 14px 20px; margin-bottom: 12px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.settings-panel .field-label { margin-bottom: 6px; }
+.settings-panel select { min-width: 180px; }
+.settings-note { margin: 0; color: var(--muted2); font-size: .72rem; flex: 1; min-width: 200px; }
+
+/* ── Buttons ────────────────────────────────────────────────────── */
+.btn-primary {
+  width: 100%; padding: 13px 24px; margin-top: 6px;
+  background: var(--grad);
+  color: #fff; font-size: .95rem; font-weight: 600;
+  border: none; border-radius: var(--r-sm);
+  cursor: pointer; letter-spacing: .02em;
+  position: relative; overflow: hidden;
+  transition: opacity .2s, transform .15s;
+}
+
+.btn-primary::after {
+  content: ""; position: absolute; inset: 0;
+  background: rgba(255,255,255,0); transition: background .2s;
+}
+
+.btn-primary:hover::after  { background: rgba(255,255,255,.08); }
+.btn-primary:active        { transform: scale(.99); }
+.btn-primary:disabled      { opacity: .4; cursor: not-allowed; }
+
+.btn-secondary {
+  padding: 10px 22px;
+  background: rgba(168,85,247,.1);
+  color: var(--violet);
+  border: 1px solid rgba(168,85,247,.25);
+  border-radius: var(--r-sm);
+  font-size: .875rem; font-weight: 500; font-family: inherit;
+  cursor: pointer; transition: all .2s;
+}
+
+.btn-secondary:hover {
+  background: rgba(168,85,247,.18);
+  border-color: rgba(168,85,247,.45);
+}
+
+/* ── Pipeline bar ───────────────────────────────────────────────── */
+.pipeline {
+  display: flex; align-items: center;
+  padding: 18px 22px; margin-bottom: 14px;
+  overflow-x: auto;
+}
+
+.pipe-stage {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  flex: 1; min-width: 72px;
+}
+
+.pipe-dot {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: rgba(255,255,255,.05);
+  border: 1.5px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: .8rem; font-weight: 700; color: var(--muted);
+  transition: all .3s;
+}
+
+.pipe-lbl {
+  font-size: .68rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); transition: color .3s;
+  white-space: nowrap;
+}
+
+.pipe-conn {
+  flex: 0 0 auto; width: 20px; height: 1.5px;
+  background: var(--border); margin-bottom: 20px;
+  transition: background .4s;
+}
+
+/* pipeline states */
+.pipe-stage.active .pipe-dot {
+  background: var(--grad);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 0 18px rgba(168,85,247,.55);
+  animation: glow-pulse 1.8s ease-in-out infinite;
+}
+
+.pipe-stage.active .pipe-lbl { color: var(--violet); }
+
+.pipe-stage.done .pipe-dot {
+  background: rgba(123,216,143,.12);
+  border-color: var(--c-done);
+  color: var(--c-done);
+}
+
+.pipe-stage.done .pipe-lbl { color: var(--c-done); }
+
+.pipe-stage.error .pipe-dot {
+  background: rgba(255,107,107,.12);
+  border-color: var(--c-error);
+  color: var(--c-error);
+}
+
+.pipe-stage.error .pipe-lbl { color: var(--c-error); }
+
+.pipe-conn.done   { background: var(--c-done); }
+.pipe-conn.active { background: linear-gradient(90deg, var(--c-done), var(--violet)); }
+
+@keyframes glow-pulse {
+  0%,100% { box-shadow: 0 0 12px rgba(168,85,247,.4); }
+  50%      { box-shadow: 0 0 26px rgba(168,85,247,.75), 0 0 42px rgba(244,114,182,.3); }
+}
+
+/* ── Log card ───────────────────────────────────────────────────── */
+.log-card { padding: 0; overflow: hidden; margin-bottom: 14px; }
+
+.log-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-title {
+  font-size: .72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: var(--muted2);
+}
+
+.stage-chip {
+  font-size: .65rem; font-weight: 600;
+  padding: 3px 10px; border-radius: 20px;
+  background: rgba(168,85,247,.15);
+  color: var(--violet);
+  border: 1px solid rgba(168,85,247,.25);
+  letter-spacing: .05em; text-transform: uppercase;
+}
+
+#log {
+  font-family: "JetBrains Mono","Cascadia Code",Consolas,"Courier New",monospace;
+  font-size: .78rem;
+  max-height: 400px; overflow-y: auto;
+  padding: 6px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(168,85,247,.3) transparent;
+}
+
+#log::-webkit-scrollbar { width: 4px; }
+#log::-webkit-scrollbar-track { background: transparent; }
+#log::-webkit-scrollbar-thumb { background: rgba(168,85,247,.3); border-radius: 2px; }
+
+.log-line {
+  display: grid;
+  grid-template-columns: 58px 80px 1fr;
+  gap: 10px; align-items: start;
+  padding: 5px 20px;
+  transition: background .12s;
+}
+
+.log-line:hover { background: rgba(255,255,255,.02); }
+
+.log-ts { color: var(--muted); font-size: .7rem; padding-top: 1px; }
+
+.log-badge {
+  font-size: .63rem; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: .05em;
+  align-self: start; margin-top: 1px; white-space: nowrap;
+}
+
+.log-msg { color: var(--text); word-break: break-word; line-height: 1.5; }
+
+/* heartbeat = muted italic */
+.log-line.hb { opacity: .65; }
+.log-line.hb .log-msg { color: var(--muted2); font-style: italic; }
+
+/* badge colors per stage */
+.bd-download  { background:rgba(56,189,248,.12);  color:var(--c-download);  }
+.bd-normalize { background:rgba(34,211,238,.12);  color:var(--c-normalize); }
+.bd-chunk     { background:rgba(251,191,36,.12);  color:var(--c-chunk);     }
+.bd-transcribe{ background:rgba(168,85,247,.12);  color:var(--c-transcribe);}
+.bd-translate { background:rgba(244,114,182,.12); color:var(--c-translate); }
+.bd-format    { background:rgba(123,216,143,.12); color:var(--c-format);    }
+.bd-done      { background:rgba(123,216,143,.12); color:var(--c-done);      }
+.bd-error     { background:rgba(255,107,107,.12); color:var(--c-error);     }
+.bd-job       { background:rgba(255,255,255,.06); color:var(--muted2);      }
+
+.msg-error { color: var(--c-error) !important; font-style: normal !important; }
+.msg-done  { color: var(--c-done); }
+
+/* ── Downloads card ─────────────────────────────────────────────── */
+.dl-card { padding: 22px; margin-bottom: 14px; }
+
+.dl-title {
+  font-size: .72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: var(--muted2); margin-bottom: 14px;
+}
+
+.dl-links { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.dl-link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 18px;
+  background: rgba(168,85,247,.08);
+  border: 1px solid rgba(168,85,247,.2);
+  border-radius: var(--r-sm);
+  color: var(--violet); text-decoration: none;
+  font-size: .85rem; font-weight: 500;
+  transition: all .2s;
+}
+
+.dl-link:hover {
+  background: rgba(168,85,247,.16);
+  border-color: rgba(168,85,247,.45);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(168,85,247,.2);
+}
+
+.dl-usage {
+  margin-top: 12px;
+  font-size: .76rem;
+  color: var(--muted);
+}
+
+/* ── Retry row ──────────────────────────────────────────────────── */
+.retry-row { text-align: center; padding-top: 4px; }
+
+/* ── Utility ─────────────────────────────────────────────────────  */
+.hidden { display: none !important; }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
+
+/* ── Textareas ──────────────────────────────────────────────────── */
+textarea {
+  width: 100%; padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,.3);
+  color: var(--text);
+  font-size: .9rem; font-family: inherit;
+  line-height: 1.5;
+  transition: border-color .2s, box-shadow .2s;
+  outline: none; resize: vertical;
+}
+
+textarea:focus {
+  border-color: rgba(168,85,247,.5);
+  box-shadow: 0 0 0 3px rgba(168,85,247,.12);
+}
+
+/* ── Collapsible context.md ─────────────────────────────────────── */
+.collapsible-toggle {
+  display: flex; align-items: center; gap: 7px;
+  cursor: pointer; color: var(--muted2);
+  font-size: .75rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em;
+  background: none; border: none; padding: 0;
+  font-family: inherit; user-select: none;
+}
+.collapsible-toggle:hover { color: var(--text); }
+
+.ctx-arrow { display: inline-block; font-size: .55rem; transition: transform .2s; }
+.ctx-arrow.open { transform: rotate(90deg); }
+
+.collapsible-body { max-height: 0; overflow: hidden; transition: max-height .3s ease; }
+.collapsible-body.open { max-height: 260px; }
+
+/* ── Two-column progress layout ─────────────────────────────────── */
+.app.wide { max-width: 1280px; }
+
+.progress-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.progress-left, .progress-right { display: flex; flex-direction: column; gap: 14px; }
+.progress-right #log { max-height: 620px; }
+.progress-right .log-card { margin-bottom: 0; }
+
+@media (max-width: 800px) {
+  .progress-cols { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
-<main>
-  <h1>Sokomagattara <span>SubGen</span></h1>
-  <p class="muted">Transkripsi JP → terjemahan ID → subtitle .ass / .srt</p>
-  <div id="config-banner" class="banner"></div>
+<div class="app">
 
-  <form id="job-form" class="card">
-    <div class="row">
-      <label><input type="radio" name="source" value="url" checked>
-        YouTube URL</label>
-      <label><input type="radio" name="source" value="file">
-        Upload file</label>
-    </div>
-    <div id="url-box">
-      <label for="url">URL YouTube</label>
-      <input type="text" id="url"
-             placeholder="https://www.youtube.com/watch?v=...">
-      <label><input type="checkbox" id="save_mp4">
-        Simpan video .mp4 (untuk ditonton dengan subtitle)</label>
-    </div>
-    <div id="file-box" class="hidden">
-      <label for="file">File audio/video (mp3, m4a, wav, mp4, mkv)</label>
-      <input type="file" id="file" accept=".mp3,.m4a,.wav,.mp4,.mkv">
-    </div>
-    <label for="translator">Model translasi</label>
-    <select id="translator"></select>
-    <label for="output_format">Format output</label>
-    <select id="output_format">
-      <option value="both">.ass + .srt</option>
-      <option value="ass">.ass saja</option>
-      <option value="srt">.srt saja</option>
-    </select>
-    <p><button type="submit" id="start-btn">Mulai</button></p>
-  </form>
+  <!-- ── Header ── -->
+  <header>
+    <h1>Sokomagattara <span class="gradient-text">SubGen</span></h1>
+    <p class="tagline">Transkripsi JP → Terjemahan ID → Subtitle .ass / .srt</p>
+  </header>
 
-  <div class="card hidden" id="progress-card">
-    <h2>Progress</h2>
-    <div id="log"></div>
-    <p id="usage" class="okline"></p>
-    <div id="downloads"></div>
-    <p><button id="retry-btn" class="hidden" type="button">
-      Coba lagi (lanjut dari checkpoint)</button></p>
+  <div id="config-banner" class="banner hidden"></div>
+
+  <!-- ── Settings panel ── -->
+  <div class="glass settings-panel">
+    <div>
+      <label class="field-label" for="gemini-key-sel">Gemini API Key Aktif</label>
+      <select id="gemini-key-sel"><option value="Default">Default</option></select>
+    </div>
+    <p class="settings-note">Hanya relevan saat menggunakan Gemini — lewati jika memakai OpenAI / Anthropic.</p>
   </div>
-</main>
+
+  <!-- ── Form card ── -->
+  <div class="glass accent form-wrap">
+    <form id="job-form">
+
+      <div class="field">
+        <div class="src-toggle" id="src-toggle">
+          <label id="lbl-file" class="active">
+            <input type="radio" name="source" value="file" checked>
+            <span>Upload File</span>
+          </label>
+          <label id="lbl-url">
+            <input type="radio" name="source" value="url">
+            <span>YouTube URL</span>
+          </label>
+          <label id="lbl-resume">
+            <input type="radio" name="source" value="resume">
+            <span>Lanjutkan Sesi</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field hidden" id="url-box">
+        <label class="field-label" for="url">URL YouTube</label>
+        <input type="text" id="url"
+               placeholder="https://www.youtube.com/watch?v=...">
+        <label class="check-row">
+          <input type="checkbox" id="save_mp4">
+          Simpan video .mp4 (untuk ditonton dengan subtitle)
+        </label>
+      </div>
+
+      <div class="field" id="file-box">
+        <label class="field-label" for="file">File audio / video (.mp3 .m4a .wav .mp4 .mkv)</label>
+        <input type="file" id="file" accept=".mp3,.m4a,.wav,.mp4,.mkv">
+      </div>
+
+      <div class="field hidden" id="resume-box">
+        <label class="field-label" for="session-sel">Pilih sesi yang akan dilanjutkan</label>
+        <select id="session-sel" style="width:100%"></select>
+        <button type="button" class="btn-primary" id="continue-btn" style="margin-top:12px" disabled>
+          ↩ Lanjutkan dari Checkpoint
+        </button>
+      </div>
+
+      <div class="divider" id="form-divider"></div>
+
+      <div class="field">
+        <label class="field-label" for="additional_context">Konteks Video (Opsional)</label>
+        <textarea id="additional_context" rows="2"
+          placeholder="Contoh: Vlog Moriya Rena memancing di Kanagawa. Tulis konteks singkat agar Gemini tidak salah tebak."></textarea>
+      </div>
+
+      <div class="field">
+        <button type="button" class="collapsible-toggle" id="ctx-toggle">
+          <span class="ctx-arrow" id="ctx-arrow">▶</span>
+          <span>Lihat / Edit context.md</span>
+        </button>
+        <div class="collapsible-body" id="ctx-body">
+          <textarea id="context_override" rows="8"
+            style="margin-top:8px; font-family:'JetBrains Mono',Consolas,monospace; font-size:.78rem;"
+            placeholder="Memuat context.md..."></textarea>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label" for="translator">Model translasi</label>
+          <select id="translator"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="output_format">Format output</label>
+          <select id="output_format">
+            <option value="both">.ass + .srt</option>
+            <option value="ass">.ass saja</option>
+            <option value="srt">.srt saja</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="submit" class="btn-primary" id="start-btn">
+        Mulai Proses
+      </button>
+
+    </form>
+  </div>
+
+  <!-- ── Progress section (hidden until job starts) ── -->
+  <div id="progress-section" class="hidden">
+    <div class="progress-cols">
+
+      <!-- Left column: pipeline + downloads + retry -->
+      <div class="progress-left">
+        <div class="glass pipeline">
+          <div class="pipe-stage" id="pipe-download">
+            <div class="pipe-dot">D</div>
+            <div class="pipe-lbl">Download</div>
+          </div>
+          <div class="pipe-conn" id="conn-0"></div>
+          <div class="pipe-stage" id="pipe-normalize">
+            <div class="pipe-dot">N</div>
+            <div class="pipe-lbl">Normalize</div>
+          </div>
+          <div class="pipe-conn" id="conn-1"></div>
+          <div class="pipe-stage" id="pipe-chunk">
+            <div class="pipe-dot">C</div>
+            <div class="pipe-lbl">Chunk</div>
+          </div>
+          <div class="pipe-conn" id="conn-2"></div>
+          <div class="pipe-stage" id="pipe-transcribe">
+            <div class="pipe-dot">T</div>
+            <div class="pipe-lbl">Transkripsi</div>
+          </div>
+          <div class="pipe-conn" id="conn-3"></div>
+          <div class="pipe-stage" id="pipe-translate">
+            <div class="pipe-dot">L</div>
+            <div class="pipe-lbl">Translasi</div>
+          </div>
+          <div class="pipe-conn" id="conn-4"></div>
+          <div class="pipe-stage" id="pipe-format">
+            <div class="pipe-dot">F</div>
+            <div class="pipe-lbl">Format</div>
+          </div>
+        </div>
+
+        <div class="glass dl-card hidden" id="dl-card">
+          <div class="dl-title">File Siap Diunduh</div>
+          <div class="dl-links" id="downloads"></div>
+          <p class="dl-usage" id="usage"></p>
+        </div>
+
+        <div class="retry-row">
+          <button class="btn-secondary hidden" id="retry-btn" type="button">
+            ↩ Coba Lagi (lanjut dari checkpoint)
+          </button>
+        </div>
+      </div><!-- /progress-left -->
+
+      <!-- Right column: log -->
+      <div class="progress-right">
+        <div class="glass log-card">
+          <div class="log-header">
+            <span class="log-title">Log</span>
+            <span class="stage-chip hidden" id="stage-chip"></span>
+          </div>
+          <div id="log"></div>
+        </div>
+      </div><!-- /progress-right -->
+
+    </div><!-- /progress-cols -->
+  </div><!-- /progress-section -->
+</div><!-- /app -->
+
 <script>
-const $ = (id) => document.getElementById(id);
-let jobId = null;
-let es = null;
+const $ = id => document.getElementById(id);
+let jobId = null, es = null;
 
-const PROVIDER_LABELS = { gemini: "Gemini", openai: "OpenAI",
-                          anthropic: "Anthropic Claude" };
+const PROVIDER_LABELS = { gemini:"Gemini", openai:"OpenAI", anthropic:"Anthropic Claude" };
 
+const STAGES = ["download","normalize","chunk","transcribe","translate","format"];
+const PIPE_ICONS = { download:"D", normalize:"N", chunk:"C", transcribe:"T", translate:"L", format:"F" };
+
+// ── Config ──────────────────────────────────────────────────────
 function showBanner(msg) {
   const b = $("config-banner");
   b.textContent = msg;
-  b.style.display = "block";
+  b.classList.remove("hidden");
 }
 
 async function loadConfig() {
   let cfg;
-  try {
-    cfg = await (await fetch("/api/config")).json();
-  } catch (e) {
-    showBanner("Tidak bisa menghubungi server: " + e);
-    $("start-btn").disabled = true;
-    return;
-  }
-  if (!cfg.ok) {
-    showBanner(cfg.error);
-    $("start-btn").disabled = true;
-    return;
-  }
+  try { cfg = await (await fetch("/api/config")).json(); }
+  catch (e) { showBanner("Tidak bisa menghubungi server: " + e); $("start-btn").disabled = true; return; }
+  if (!cfg.ok) { showBanner(cfg.error); $("start-btn").disabled = true; return; }
   if (!cfg.ffmpeg) {
-    showBanner("ffmpeg/ffprobe tidak ditemukan di PATH. " +
-               "Install: winget install Gyan.FFmpeg lalu restart terminal.");
+    showBanner("ffmpeg/ffprobe tidak ditemukan di PATH. Install: winget install Gyan.FFmpeg lalu restart terminal.");
     $("start-btn").disabled = true;
   }
   const sel = $("translator");
@@ -116,63 +683,161 @@ async function loadConfig() {
     if (!available) continue;
     const opt = document.createElement("option");
     opt.value = prov;
-    opt.textContent = (PROVIDER_LABELS[prov] || prov) +
-                      " — " + cfg.translate_models[prov];
+    opt.textContent = (PROVIDER_LABELS[prov] || prov) + " — " + cfg.translate_models[prov];
     sel.appendChild(opt);
+  }
+
+  // Populate Gemini key selector
+  const ksel = $("gemini-key-sel");
+  ksel.innerHTML = "";
+  for (const label of (cfg.gemini_keys || ["Default"])) {
+    const opt = document.createElement("option");
+    opt.value = label;
+    opt.textContent = label;
+    ksel.appendChild(opt);
+  }
+  ksel.value = cfg.active_gemini_key || "Default";
+}
+
+// ── Pipeline bar ─────────────────────────────────────────────────
+function setPipeStage(stage, state) {
+  const el = $("pipe-" + stage);
+  if (!el) return;
+  el.className = "pipe-stage " + state;
+  const dot = el.querySelector(".pipe-dot");
+  if (state === "done")  dot.textContent = "✓";
+  else if (state === "error") dot.textContent = "✕";
+  else dot.textContent = PIPE_ICONS[stage] || stage[0].toUpperCase();
+}
+
+function updatePipeline(stage, status) {
+  if (stage === "done") return;
+  const idx = STAGES.indexOf(stage);
+  if (idx === -1) return;
+
+  if (status === "start" || status === "progress") {
+    setPipeStage(stage, "active");
+    STAGES.slice(0, idx).forEach((s, i) => {
+      if ($("pipe-" + s) && !$("pipe-" + s).classList.contains("error"))
+        setPipeStage(s, "done");
+      const c = $("conn-" + i);
+      if (c) c.className = "pipe-conn done";
+    });
+    if (idx > 0) {
+      const c = $("conn-" + (idx - 1));
+      if (c) c.className = "pipe-conn active";
+    }
+    const chip = $("stage-chip");
+    chip.textContent = stage.toUpperCase();
+    chip.classList.remove("hidden");
+  } else if (status === "done") {
+    setPipeStage(stage, "done");
+    const c = $("conn-" + (idx - 1));
+    if (c) c.className = "pipe-conn done";
+  } else if (status === "error") {
+    setPipeStage(stage, "error");
   }
 }
 
-function logLine(text, cls) {
-  const div = document.createElement("div");
-  if (cls) div.className = cls;
-  div.textContent = text;
-  $("log").appendChild(div);
+// ── Log ──────────────────────────────────────────────────────────
+function ts() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map(n => String(n).padStart(2,"0")).join(":");
+}
+
+const HB_PATTERNS = ["masih menunggu", "masih memproses", "elapsed"];
+
+function isHeartbeat(msg) {
+  return msg && HB_PATTERNS.some(p => msg.includes(p));
+}
+
+function logLine(stage, status, msg) {
+  const wrap = document.createElement("div");
+  wrap.className = "log-line" + (isHeartbeat(msg) ? " hb" : "");
+
+  const t = document.createElement("span");
+  t.className = "log-ts";
+  t.textContent = ts();
+
+  const b = document.createElement("span");
+  const bKey = status === "error" ? "error" : (stage || "job");
+  b.className = "log-badge bd-" + bKey;
+  b.textContent = stage || "job";
+
+  const m = document.createElement("span");
+  m.className = "log-msg" + (status === "error" ? " msg-error" : status === "done" && stage === "done" ? " msg-done" : "");
+  m.textContent = msg || status;
+
+  wrap.append(t, b, m);
+  $("log").appendChild(wrap);
   $("log").scrollTop = $("log").scrollHeight;
 }
 
+// ── Reset & finish ───────────────────────────────────────────────
 function resetProgress() {
-  $("progress-card").classList.remove("hidden");
+  document.querySelector(".app").classList.add("wide");
+  $("progress-section").classList.remove("hidden");
   $("log").innerHTML = "";
   $("usage").textContent = "";
   $("downloads").innerHTML = "";
+  $("dl-card").classList.add("hidden");
   $("retry-btn").classList.add("hidden");
+  $("stage-chip").classList.add("hidden");
+  STAGES.forEach((s, i) => {
+    setPipeStage(s, "");
+    const c = $("conn-" + i);
+    if (c) c.className = "pipe-conn";
+  });
 }
 
-function finish(result) {
+function finishJob(result) {
+  STAGES.forEach((s, i) => {
+    if (!$("pipe-" + s).classList.contains("error")) setPipeStage(s, "done");
+    const c = $("conn-" + i);
+    if (c) c.className = "pipe-conn done";
+  });
+  $("stage-chip").classList.add("hidden");
   $("usage").textContent = result.usage.line || "";
   for (const name of result.files) {
     const a = document.createElement("a");
     a.href = "/api/jobs/" + jobId + "/files/" + name;
-    a.textContent = "⬇ " + name;
+    a.className = "dl-link";
+    a.textContent = "↓ " + name;
     $("downloads").appendChild(a);
   }
+  $("dl-card").classList.remove("hidden");
 }
 
+// ── SSE ──────────────────────────────────────────────────────────
 function listen(id) {
   if (es) es.close();
   es = new EventSource("/api/jobs/" + id + "/events");
-  es.onmessage = (msg) => {
+  es.onmessage = msg => {
     const ev = JSON.parse(msg.data);
+    updatePipeline(ev.stage, ev.status);
     if (ev.status === "error") {
-      logLine("[" + ev.stage + "] GAGAL: " + (ev.message || ""), "error");
+      logLine(ev.stage, "error", "GAGAL: " + (ev.message || ""));
       $("retry-btn").classList.remove("hidden");
       return;
     }
-    logLine("[" + ev.stage + "] " + (ev.message || ev.status));
-    if (ev.stage === "done" && ev.result) finish(ev.result);
+    logLine(ev.stage, ev.status, ev.message || ev.status);
+    if (ev.stage === "done" && ev.result) finishJob(ev.result);
   };
   es.addEventListener("end", () => es.close());
-  es.onerror = () => {};  // the server closes the stream when the job ends
+  es.onerror = () => {};
 }
 
-$("job-form").addEventListener("submit", async (e) => {
+// ── Submit ───────────────────────────────────────────────────────
+$("job-form").addEventListener("submit", async e => {
   e.preventDefault();
-  const source =
-    document.querySelector('input[name="source"]:checked').value;
+  const source = document.querySelector('input[name="source"]:checked').value;
   const fd = new FormData();
   fd.append("source", source);
   fd.append("translator", $("translator").value);
   fd.append("output_format", $("output_format").value);
+  fd.append("additional_context", $("additional_context").value.trim());
+  fd.append("context_override", $("context_override").value.trim());
   if (source === "url") {
     fd.append("url", $("url").value.trim());
     fd.append("save_mp4", $("save_mp4").checked);
@@ -180,37 +845,127 @@ $("job-form").addEventListener("submit", async (e) => {
     if (!$("file").files[0]) { alert("Pilih file dulu."); return; }
     fd.append("file", $("file").files[0]);
   }
-  const resp = await fetch("/api/jobs", { method: "POST", body: fd });
+  const btn = $("start-btn");
+  btn.disabled = true; btn.textContent = "Memproses...";
+  const resp = await fetch("/api/jobs", { method:"POST", body:fd });
+  btn.disabled = false; btn.textContent = "Mulai Proses";
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    alert(err.detail || ("Gagal membuat job (HTTP " + resp.status + ")"));
+    alert(err.detail || "Gagal membuat job (HTTP " + resp.status + ")");
     return;
   }
   jobId = (await resp.json()).job_id;
   resetProgress();
-  logLine("Job " + jobId + " dimulai...");
+  logLine("job", "start", "Job " + jobId + " dimulai...");
   listen(jobId);
 });
 
+// ── Retry ────────────────────────────────────────────────────────
 $("retry-btn").addEventListener("click", async () => {
-  const resp = await fetch("/api/jobs/" + jobId + "/retry",
-                           { method: "POST" });
+  const resp = await fetch("/api/jobs/" + jobId + "/retry", { method:"POST" });
   if (!resp.ok) { alert("Gagal retry."); return; }
   resetProgress();
-  logLine("Job " + jobId + " diulang dari checkpoint...");
+  logLine("job", "start", "Job " + jobId + " diulang dari checkpoint...");
   listen(jobId);
 });
 
-for (const radio of document.querySelectorAll('input[name="source"]')) {
-  radio.addEventListener("change", () => {
-    const isUrl =
-      document.querySelector('input[name="source"]:checked').value === "url";
+// ── Source toggle ─────────────────────────────────────────────────
+document.querySelectorAll('input[name="source"]').forEach(r => {
+  r.addEventListener("change", () => {
+    const src = document.querySelector('input[name="source"]:checked').value;
+    const isUrl    = src === "url";
+    const isFile   = src === "file";
+    const isResume = src === "resume";
     $("url-box").classList.toggle("hidden", !isUrl);
-    $("file-box").classList.toggle("hidden", isUrl);
+    $("file-box").classList.toggle("hidden", !isFile);
+    $("resume-box").classList.toggle("hidden", !isResume);
+    $("form-divider").classList.toggle("hidden", isResume);
+    $("start-btn").classList.toggle("hidden", isResume);
+    $("lbl-url").classList.toggle("active", isUrl);
+    $("lbl-file").classList.toggle("active", isFile);
+    $("lbl-resume").classList.toggle("active", isResume);
+    if (isResume) loadSessions();
   });
+});
+
+// ── Continue last session ─────────────────────────────────────────
+async function loadSessions() {
+  const sel = $("session-sel");
+  const btn = $("continue-btn");
+  sel.innerHTML = "";
+  try {
+    const data = await (await fetch("/api/sessions")).json();
+    if (!data.sessions || data.sessions.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Tidak ada sesi yang dapat dilanjutkan";
+      opt.disabled = true;
+      opt.selected = true;
+      sel.appendChild(opt);
+      btn.disabled = true;
+      return;
+    }
+    for (const s of data.sessions) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.label;
+      sel.appendChild(opt);
+    }
+    btn.disabled = false;
+  } catch (e) {
+    sel.innerHTML = "<option disabled selected>Gagal memuat sesi</option>";
+    btn.disabled = true;
+  }
 }
 
+$("continue-btn").addEventListener("click", async () => {
+  const sel = $("session-sel");
+  const sessionId = sel.value;
+  if (!sessionId) return;
+  const btn = $("continue-btn");
+  btn.disabled = true; btn.textContent = "Melanjutkan...";
+  const resp = await fetch("/api/jobs/" + sessionId + "/retry", { method: "POST" });
+  btn.disabled = false; btn.textContent = "↩ Lanjutkan dari Checkpoint";
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.detail || "Gagal melanjutkan sesi.");
+    return;
+  }
+  jobId = sessionId;
+  resetProgress();
+  logLine("job", "start", "Melanjutkan sesi " + sessionId + " dari checkpoint...");
+  listen(sessionId);
+});
+
+// ── Context.md fetch ──────────────────────────────────────────────
+async function loadContext() {
+  try {
+    const data = await (await fetch("/api/context")).json();
+    $("context_override").value = data.context_md || "";
+  } catch (e) {
+    $("context_override").placeholder = "Gagal memuat context.md: " + e;
+  }
+}
+
+// ── Collapsible context.md ────────────────────────────────────────
+$("ctx-toggle").addEventListener("click", () => {
+  const body = $("ctx-body");
+  const arrow = $("ctx-arrow");
+  const open = body.classList.toggle("open");
+  arrow.classList.toggle("open", open);
+  if (open && !$("context_override").value) loadContext();
+});
+
+$("gemini-key-sel").addEventListener("change", async () => {
+  await fetch("/api/config/active-key", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({label: $("gemini-key-sel").value}),
+  });
+});
+
 loadConfig();
+loadContext();
 </script>
 </body>
 </html>

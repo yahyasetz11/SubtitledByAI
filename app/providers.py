@@ -24,6 +24,40 @@ def _clean_cookies_value(raw: str | None) -> str | None:
     return value
 
 
+_active_gemini_label: str = "Default"
+
+
+def get_all_gemini_keys() -> dict[str, str]:
+    """Scan env for GEMINI_API_KEY (label 'Default') and GEMINI_API_KEY_<LABEL>.
+    Returns {label: key_value} for every non-empty key found."""
+    keys: dict[str, str] = {}
+    default = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if default:
+        keys["Default"] = default
+    for var, value in os.environ.items():
+        if var.startswith("GEMINI_API_KEY_"):
+            label = var[len("GEMINI_API_KEY_"):]
+            stripped = value.strip()
+            if stripped:
+                keys[label] = stripped
+    return keys
+
+
+def get_active_gemini_label() -> str:
+    return _active_gemini_label
+
+
+def set_active_gemini_key(label: str) -> None:
+    global _active_gemini_label
+    available = get_all_gemini_keys()
+    if label not in available:
+        raise ConfigError(
+            f"Label Gemini key '{label}' tidak ditemukan. "
+            f"Tambahkan GEMINI_API_KEY_{label}=... ke .env."
+        )
+    _active_gemini_label = label
+
+
 @dataclass
 class Config:
     gemini_api_key: str
@@ -40,7 +74,8 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         load_dotenv(override=False)
-        gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+        all_keys = get_all_gemini_keys()
+        gemini_key = all_keys.get(_active_gemini_label, "")
         if not gemini_key:
             raise ConfigError(
                 "GEMINI_API_KEY belum diisi. Salin .env.example menjadi .env "

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -13,6 +14,7 @@ from app import audio, pipeline, providers
 app = FastAPI(title="Sokomagattara SubGen")
 
 STATIC_DIR = Path("static")
+CONTEXT_DIR = Path("context")
 # Allowlist: never serve job.json (contains params) or arbitrary paths.
 DOWNLOADABLE = {"result.ass", "result.srt", "transcript_jp.json",
                 "translated_id.json", "flags.json", "usage.json",
@@ -23,6 +25,50 @@ VALID_FORMATS = {"ass", "srt", "both"}
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/api/context")
+def get_context() -> dict:
+    return {"context_md": (CONTEXT_DIR / "context.md").read_text(encoding="utf-8")}
+
+
+@app.get("/api/sessions")
+def list_sessions() -> dict:
+    output_dir = pipeline.OUTPUT_DIR
+    if not output_dir.exists():
+        return {"sessions": []}
+    sessions = []
+    for job_dir in sorted(output_dir.iterdir(), reverse=True):
+        if not job_dir.is_dir():
+            continue
+        meta_path = job_dir / "job.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        status = meta.get("status", "")
+        if status not in ("failed", "running"):
+            continue
+        job_id = meta["id"]
+        params = meta.get("params", {})
+        display_name = (params.get("original_filename")
+                        or params.get("url")
+                        or job_id)
+        if len(display_name) > 40:
+            display_name = display_name[:37] + "..."
+        try:
+            dt = datetime.strptime(job_id[:15], "%Y%m%d-%H%M%S")
+            ts = dt.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            ts = job_id[:15]
+        sessions.append({
+            "id": job_id,
+            "label": f"{ts} · {display_name} · {status}",
+            "status": status,
+        })
+    return {"sessions": sessions}
 
 
 @app.get("/api/config")
@@ -37,7 +83,21 @@ def get_config() -> dict:
         "translate_models": cfg.translate_models,
         "transcribe_model": cfg.transcribe_model,
         "ffmpeg": audio.ensure_ffmpeg(),
+        "gemini_keys": list(providers.get_all_gemini_keys().keys()),
+        "active_gemini_key": providers.get_active_gemini_label(),
     }
+
+
+@app.put("/api/config/active-key")
+def set_active_key(body: dict) -> dict:
+    label = (body.get("label") or "").strip()
+    if not label:
+        raise HTTPException(422, "label wajib diisi.")
+    try:
+        providers.set_active_gemini_key(label)
+    except providers.ConfigError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"active_gemini_key": providers.get_active_gemini_label()}
 
 
 def _get_job_or_404(job_id: str) -> pipeline.Job:
@@ -54,6 +114,8 @@ async def create_job(background_tasks: BackgroundTasks,
                      translator: str = Form("gemini"),
                      output_format: str = Form("both"),
                      save_mp4: bool = Form(False),
+                     context_override: str = Form(""),
+                     additional_context: str = Form(""),
                      file: UploadFile | None = File(None)) -> dict:
     if output_format not in VALID_FORMATS:
         raise HTTPException(422, f"output_format tidak dikenal: {output_format!r}")
@@ -80,7 +142,9 @@ async def create_job(background_tasks: BackgroundTasks,
 
     params = {"source": source, "url": url.strip() or None,
               "translator": translator, "output_format": output_format,
-              "save_mp4": save_mp4, "original_filename": upload_name}
+              "save_mp4": save_mp4, "original_filename": upload_name,
+              "context_override": context_override.strip() or None,
+              "additional_context": additional_context.strip() or None}
     job = pipeline.create_job(params, upload_bytes=upload_bytes,
                               upload_filename=upload_name)
     background_tasks.add_task(pipeline.run_job, job.id)

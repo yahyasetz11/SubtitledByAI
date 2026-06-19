@@ -97,3 +97,9 @@ def test_translate_batch_raises_when_fallback_fails():
 def test_build_translate_system_injects_context():
     system = build_translate_system("CTX", "MEMBERS")
     assert "CTX" in system and "MEMBERS" in system
+
+
+def test_build_translate_system_includes_additional_context():
+    system = build_translate_system("CTX", "MEMBERS",
+                                    additional_context="Fishing vlog in Kanagawa")
+    assert "Fishing vlog in Kanagawa" in system
