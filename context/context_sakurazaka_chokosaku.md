@@ -10,7 +10,7 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 - **Judul:** ちょこさく — dalam subtitle selalu ditulis **"Chokosaku"**, jangan diterjemahkan.
 - **Format:** Extended variety segment Sakurazaka46. Konten yang dipotong dari program utama atau segmen tambahan yang tidak ditayangkan di TV. Durasi bervariasi.
 - **Peserta:** 5–7 member Sakurazaka46 per episode. Tidak ada MC tetap dari luar — 1–2 member bertindak sebagai MC/pembawa acara per segmen.
-- Member Sakurazaka46 yang tampil bervariasi. Ejaan nama mengikuti `members.md`.
+- Member Sakurazaka46 yang tampil bervariasi. Ejaan nama mengikuti `members_sakurazaka.md`.
 - **Tidak ada narator eksternal.** Semua suara adalah dialog langsung antar member.
 
 ---
@@ -59,7 +59,7 @@ Target: **Bahasa Indonesia informal yang natural — santai tapi tidak terlalu s
 3. DILARANG slang Jaksel / campuran Inggris yang tidak perlu ("literally", "which is", "you know").
 4. Kalimat keigo/sopan ke penonton tetap diterjemahkan **informal-ramah**, bukan formal kaku.
 5. Reaksi spontan diterjemahkan hidup: えっ→"Eh!?", マジで→"Serius?!", うそ→"Bohong!/Masa sih?!", やばい→"Gawat/Gila sih" (sesuai konteks).
-6. Nama member dan istilah mengikuti `members.md` dan glossary di atas, ejaan persis.
+6. Nama member dan istilah mengikuti `members_sakurazaka.md` dan glossary di atas, ejaan persis.
 7. Angka dan satuan ditulis biasa (10 Juni, 30 besar, 15 menit).
 8. Jangan menambah atau membuang informasi; satu ujaran sumber = satu entri terjemahan (jaga alignment id).
 
@@ -89,5 +89,5 @@ ID: Kerja bagus hari ini~!
 
 - Audio adalah extended variety segment: suasana lebih santai dan intim dibanding program TV utama. Mungkin ada BGM ringan dan tumpang-tindih suara antar member.
 - Tidak ada narator — semua ujaran adalah dialog langsung. Gunakan `type: "dialogue"` untuk semua ujaran.
-- Nama orang yang terdengar kemungkinan besar adalah member di `members.md` — utamakan ejaan dari daftar tersebut.
+- Nama orang yang terdengar kemungkinan besar adalah member di `members_sakurazaka.md` — utamakan ejaan dari daftar tersebut.
 - Teks di layar (telop) tidak perlu ditranskripsikan kecuali dibacakan.

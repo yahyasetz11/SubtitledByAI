@@ -65,7 +65,7 @@ def list_contexts() -> dict:
 
 
 @app.get("/api/context")
-def get_context(preset: str = Query("sokomagattara")) -> dict:
+def get_context(preset: str = Query("sakurazaka_sokomagattara")) -> dict:
     path = CONTEXT_DIR / f"context_{preset}.md"
     if not path.exists():
         raise HTTPException(404, f"Preset '{preset}' tidak ditemukan.")

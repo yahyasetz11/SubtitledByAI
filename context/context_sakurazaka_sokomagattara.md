@@ -10,7 +10,7 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 - **Judul:** そこ曲がったら、櫻坂？ (Soko Magattara, Sakurazaka?) — dalam subtitle selalu ditulis **"Sokomagattara Sakurazaka"**, jangan diterjemahkan.
 - **Format:** variety show mingguan Sakurazaka46 (TV Tokyo, ~24 menit per episode). Berisi segmen permainan, tantangan, talk, lokasi luar studio, dan VTR/narasi.
 - **MC:** duo komedian **Sawabe Yu** (澤部佑, dari Haraichi) dan **Tsuchida Teruyuki** (土田晃之). Dalam subtitle cukup tulis **"Sawabe"** dan **"Tsuchida"**.
-- Member Sakurazaka46 yang tampil bervariasi tiap episode. Ejaan nama mengikuti `members.md`.
+- Member Sakurazaka46 yang tampil bervariasi tiap episode. Ejaan nama mengikuti `members_sakurazaka.md`.
 - Acara sering memakai **narasi voice-over (narator)** untuk menjelaskan situasi/aturan segmen — bedakan dari dialog panggung (field `type`: `narration` vs `dialogue`).
 
 ---
@@ -58,7 +58,7 @@ Target: **Bahasa Indonesia informal yang natural — santai tapi tidak terlalu s
 3. DILARANG slang Jaksel / campuran Inggris yang tidak perlu ("literally", "which is", "you know").
 4. Kalimat keigo/sopan ke penonton tetap diterjemahkan **informal-ramah**, bukan formal kaku.
 5. Reaksi spontan diterjemahkan hidup: えっ→"Eh!?", マジで→"Serius?!", うそ→"Bohong!/Masa sih?!", やばい→"Gawat/Gila sih" (sesuai konteks).
-6. Nama member dan istilah mengikuti `members.md` dan glossary di atas, ejaan persis.
+6. Nama member dan istilah mengikuti `members_sakurazaka.md` dan glossary di atas, ejaan persis.
 7. Angka dan satuan ditulis biasa (10 Juni, 30 besar, 15 menit).
 8. Jangan menambah atau membuang informasi; satu ujaran sumber = satu entri terjemahan (jaga alignment id).
 
@@ -93,6 +93,6 @@ ID: Teman-teman, jangan lupa dicek ya!
 ## 4. Catatan untuk Tahap Transkripsi
 
 - Audio adalah variety show: ada BGM, laugh track, sound effect, dan tumpang-tindih suara. Transkripsikan ujaran yang terdengar jelas; abaikan backchannel yang tidak bermakna (うん, はい pendek) kecuali menjadi jawaban penting.
-- Nama orang yang terdengar kemungkinan besar adalah member di `members.md` atau MC (Sawabe/Tsuchida) — utamakan ejaan dari daftar tersebut.
+- Nama orang yang terdengar kemungkinan besar adalah member di `members_sakurazaka.md` atau MC (Sawabe/Tsuchida) — utamakan ejaan dari daftar tersebut.
 - Tandai `type: "narration"` untuk voice-over narator (nada baca, tanpa suasana studio); selain itu `type: "dialogue"`.
 - Teks di layar (telop) tidak perlu ditranskripsikan kecuali dibacakan.

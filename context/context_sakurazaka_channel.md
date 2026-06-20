@@ -10,7 +10,7 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 - **Saluran:** Sakurazaka Channel — channel YouTube resmi Sakurazaka46.
 - **Format:** Konten YouTube bervariasi: vlog member, behind-the-scenes, mini variety, challenge video, diary series, dan interaksi antar member. Durasi bervariasi (biasanya 5–20 menit). Tidak ada format baku.
 - **Host:** Member Sakurazaka46 sendiri — tidak ada MC tetap dari luar. Member yang tampil berbeda tiap video.
-- Member Sakurazaka46 yang tampil bervariasi. Ejaan nama mengikuti `members.md`.
+- Member Sakurazaka46 yang tampil bervariasi. Ejaan nama mengikuti `members_sakurazaka.md`.
 - **Tidak ada narator eksternal.** Semua suara adalah dialog langsung, vlog address ke kamera, atau voice-over ringan oleh member sendiri.
 
 ---
@@ -60,7 +60,7 @@ Target: **Bahasa Indonesia informal yang natural — santai tapi tidak terlalu s
 3. DILARANG slang Jaksel / campuran Inggris yang tidak perlu ("literally", "which is", "you know").
 4. Kalimat keigo/sopan ke penonton tetap diterjemahkan **informal-ramah**, bukan formal kaku.
 5. Reaksi spontan diterjemahkan hidup: えっ→"Eh!?", マジで→"Serius?!", うそ→"Bohong!/Masa sih?!", やばい→"Gawat/Gila sih" (sesuai konteks).
-6. Nama member dan istilah mengikuti `members.md` dan glossary di atas, ejaan persis.
+6. Nama member dan istilah mengikuti `members_sakurazaka.md` dan glossary di atas, ejaan persis.
 7. Angka dan satuan ditulis biasa (10 Juni, 30 besar, 15 menit).
 8. Jangan menambah atau membuang informasi; satu ujaran sumber = satu entri terjemahan (jaga alignment id).
 9. Sapaan ke penonton YouTube ("みなさん", "見てくれてる人") diterjemahkan natural: "teman-teman", "kalian", bukan "pemirsa" atau "penonton".
@@ -95,5 +95,5 @@ ID: Teman-teman, jangan lupa subscribe ya!
 - Audio adalah konten YouTube informal: kualitas audio bervariasi tergantung video. Mungkin ada BGM, voice-over member, atau dialog langsung ke kamera.
 - Member kadang berbicara langsung ke kamera (vlog style) — transkripsikan apa adanya.
 - Tidak ada narator eksternal. Gunakan `type: "dialogue"` untuk semua ujaran, termasuk address ke kamera.
-- Nama orang yang terdengar kemungkinan besar adalah member di `members.md` — utamakan ejaan dari daftar tersebut.
+- Nama orang yang terdengar kemungkinan besar adalah member di `members_sakurazaka.md` — utamakan ejaan dari daftar tersebut.
 - Teks di layar (telop) tidak perlu ditranskripsikan kecuali dibacakan.
