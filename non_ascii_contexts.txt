@@ -1,8 +1,0 @@
-pos=1841 U+2192: char context=| class="muted">Transkripsi JP → terjemahan ID → subtitle .as|
-pos=1857 U+2192: char context=|ranskripsi JP → terjemahan ID → subtitle .ass / .srt</p>
-  <|
-pos=4496 U+2014: char context=|ov) +
-                      " — " + cfg.translate_models[pro|
-pos=5219 U+2B07: char context=| + name;
-    a.textContent = "⬇ " + name;
-    $("downloads")|
