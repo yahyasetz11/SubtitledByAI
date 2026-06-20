@@ -6,12 +6,39 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from app import audio, pipeline, providers
 
-app = FastAPI(title="Sokomagattara SubGen")
+app = FastAPI(title="SubtitledByAI")
+
+GROUPS: dict[str, dict] = {
+    "sakurazaka": {
+        "label": "Sakurazaka46",
+        "shows": [
+            {"id": "sakurazaka_sokomagattara", "label": "Sokomagattara Sakurazaka"},
+            {"id": "sakurazaka_chokosaku", "label": "Choko-Saku"},
+            {"id": "sakurazaka_channel", "label": "Sakurazaka Channel"},
+        ],
+    },
+    "nogizaka": {
+        "label": "Nogizaka46",
+        "shows": [
+            {"id": "nogizaka_kojichuu", "label": "Nogizaka Kojichuu"},
+            {"id": "nogizaka_enchouchuu", "label": "Nogizaka Kouji Enchouchuu"},
+            {"id": "nogizaka_haishinchuu", "label": "Nogizaka Haishinchuu"},
+        ],
+    },
+    "hinatazaka": {
+        "label": "Hinatazaka46",
+        "shows": [
+            {"id": "hinatazaka_aimashou", "label": "Hinatazaka de Aimashou"},
+            {"id": "hinatazaka_narimashou", "label": "Hinatazaka de Narimashou"},
+            {"id": "hinatazaka_channel", "label": "Hinatazaka Channel"},
+        ],
+    },
+}
 
 STATIC_DIR = Path("static")
 CONTEXT_DIR = Path("context")
@@ -27,9 +54,22 @@ def index() -> str:
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
+@app.get("/api/contexts")
+def list_contexts() -> dict:
+    groups = [
+        {"id": gid, "label": gdata["label"], "shows": gdata["shows"]}
+        for gid, gdata in GROUPS.items()
+    ]
+    groups.append({"id": "else", "label": "Else / Other", "shows": []})
+    return {"groups": groups}
+
+
 @app.get("/api/context")
-def get_context() -> dict:
-    return {"context_md": (CONTEXT_DIR / "context.md").read_text(encoding="utf-8")}
+def get_context(preset: str = Query("sokomagattara")) -> dict:
+    path = CONTEXT_DIR / f"context_{preset}.md"
+    if not path.exists():
+        raise HTTPException(404, f"Preset '{preset}' tidak ditemukan.")
+    return {"context_md": path.read_text(encoding="utf-8")}
 
 
 @app.get("/api/sessions")
@@ -114,6 +154,8 @@ async def create_job(background_tasks: BackgroundTasks,
                      translator: str = Form("gemini"),
                      output_format: str = Form("both"),
                      save_mp4: bool = Form(False),
+                     group: str = Form("sakurazaka"),
+                     context_preset: str = Form("sakurazaka_sokomagattara"),
                      context_override: str = Form(""),
                      additional_context: str = Form(""),
                      file: UploadFile | None = File(None)) -> dict:
@@ -143,6 +185,8 @@ async def create_job(background_tasks: BackgroundTasks,
     params = {"source": source, "url": url.strip() or None,
               "translator": translator, "output_format": output_format,
               "save_mp4": save_mp4, "original_filename": upload_name,
+              "group": group.strip() or "sakurazaka",
+              "context_preset": context_preset.strip() or "sakurazaka_sokomagattara",
               "context_override": context_override.strip() or None,
               "additional_context": additional_context.strip() or None}
     job = pipeline.create_job(params, upload_bytes=upload_bytes,

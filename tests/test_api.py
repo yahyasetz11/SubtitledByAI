@@ -120,14 +120,69 @@ def test_unknown_job_404(client):
     assert client.get("/api/jobs/nope").status_code == 404
 
 
-def test_get_context_returns_context_md(client, monkeypatch, tmp_path):
+def test_get_context_with_preset_param(client, monkeypatch, tmp_path):
     ctx_dir = tmp_path / "context"
     ctx_dir.mkdir()
-    (ctx_dir / "context.md").write_text("# Acara Context", encoding="utf-8")
+    (ctx_dir / "context_sakurazaka_sokomagattara.md").write_text("# Soko Context", encoding="utf-8")
     monkeypatch.setattr(main, "CONTEXT_DIR", ctx_dir)
-    resp = client.get("/api/context")
+    resp = client.get("/api/context?preset=sakurazaka_sokomagattara")
     assert resp.status_code == 200
-    assert resp.json()["context_md"] == "# Acara Context"
+    assert resp.json()["context_md"] == "# Soko Context"
+
+
+def test_get_context_unknown_preset_returns_404(client, monkeypatch, tmp_path):
+    ctx_dir = tmp_path / "context"
+    ctx_dir.mkdir()
+    monkeypatch.setattr(main, "CONTEXT_DIR", ctx_dir)
+    resp = client.get("/api/context?preset=nonexistent")
+    assert resp.status_code == 404
+
+
+def test_get_contexts_returns_groups_structure(client):
+    resp = client.get("/api/contexts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "groups" in body
+    group_ids = {g["id"] for g in body["groups"]}
+    assert group_ids == {"sakurazaka", "nogizaka", "hinatazaka", "else"}
+
+
+def test_get_contexts_each_group_has_shows(client):
+    body = client.get("/api/contexts").json()
+    groups = {g["id"]: g for g in body["groups"]}
+    assert len(groups["sakurazaka"]["shows"]) == 3
+    assert len(groups["nogizaka"]["shows"]) == 3
+    assert len(groups["hinatazaka"]["shows"]) == 3
+    assert groups["else"]["shows"] == []
+
+
+def test_get_contexts_show_ids_are_group_prefixed(client):
+    body = client.get("/api/contexts").json()
+    groups = {g["id"]: g for g in body["groups"]}
+    saka_ids = {s["id"] for s in groups["sakurazaka"]["shows"]}
+    assert "sakurazaka_sokomagattara" in saka_ids
+    assert "sakurazaka_chokosaku" in saka_ids
+    assert "sakurazaka_channel" in saka_ids
+    nogi_ids = {s["id"] for s in groups["nogizaka"]["shows"]}
+    assert "nogizaka_kojichuu" in nogi_ids
+    hina_ids = {s["id"] for s in groups["hinatazaka"]["shows"]}
+    assert "hinatazaka_aimashou" in hina_ids
+
+
+def test_create_job_stores_group_param(client, fake_run):
+    resp = post_url_job(client, group="nogizaka",
+                        context_preset="nogizaka_kojichuu")
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params.get("group") == "nogizaka"
+    assert job.params.get("context_preset") == "nogizaka_kojichuu"
+
+
+def test_create_job_group_defaults_to_sakurazaka(client, fake_run):
+    resp = post_url_job(client)
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params.get("group") == "sakurazaka"
 
 
 def test_create_job_stores_additional_context_and_override(client, fake_run):
@@ -179,6 +234,7 @@ def _write_job(tmp_path, job_id, status, original_filename=None, url=None):
     params = {"source": "file" if original_filename else "url",
               "url": url, "translator": "gemini", "output_format": "ass",
               "save_mp4": False, "original_filename": original_filename,
+              "group": "sakurazaka", "context_preset": "sakurazaka_sokomagattara",
               "context_override": None, "additional_context": None}
     meta = {"id": job_id, "params": params, "status": status,
             "error": None, "events": []}
