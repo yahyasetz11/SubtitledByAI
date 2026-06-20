@@ -113,10 +113,17 @@ def run_job(job_id: str) -> None:
         _emit(job, stage, "error", message=str(exc))
 
 
-def _read_context() -> tuple[str, str]:
-    # §4: hot-reload per job — never cached across jobs.
-    context_md = (CONTEXT_DIR / "context.md").read_text(encoding="utf-8")
-    members_md = (CONTEXT_DIR / "members.md").read_text(encoding="utf-8")
+def _read_context(group: str | None, preset: str | None) -> tuple[str, str]:
+    if not group or group == "else":
+        return "", ""
+    members_path = CONTEXT_DIR / f"members_{group}.md"
+    members_md = members_path.read_text(encoding="utf-8") if members_path.exists() else ""
+    if not preset:
+        return "", members_md
+    path = CONTEXT_DIR / f"context_{preset}.md"
+    if not path.exists():
+        raise FileNotFoundError(f"Context preset '{preset}' tidak ditemukan: {path}")
+    context_md = path.read_text(encoding="utf-8")
     return context_md, members_md
 
 
@@ -192,7 +199,9 @@ def _stage_transcribe(job: Job, cfg, tracker,
         _emit(job, "transcribe", "done",
               f"{len(utterances)} ujaran (checkpoint)")
         return utterances
-    context_md, members_md = _read_context()
+    context_md, members_md = _read_context(
+        job.params.get("group"), job.params.get("context_preset")
+    )
     if job.params.get("context_override"):
         context_md = job.params["context_override"]
     additional_context = job.params.get("additional_context") or None
@@ -263,7 +272,9 @@ def _stage_translate(job: Job, cfg, tracker,
         rows = json.loads(out_path.read_text(encoding="utf-8"))
         _emit(job, "translate", "done", f"{len(rows)} baris (checkpoint)")
         return rows
-    context_md, members_md = _read_context()
+    context_md, members_md = _read_context(
+        job.params.get("group"), job.params.get("context_preset")
+    )
     if job.params.get("context_override"):
         context_md = job.params["context_override"]
     additional_context = job.params.get("additional_context") or None

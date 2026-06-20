@@ -171,3 +171,82 @@ def test_context_override_used_in_prompt_builders(env, monkeypatch):
     job = pipeline.create_job(make_params(context_override="OVERRIDE-CTX"))
     pipeline.run_job(job.id)
     assert received.get("context_md") == "OVERRIDE-CTX"
+
+
+def test_context_preset_param_loads_correct_file(env, monkeypatch, tmp_path):
+    ctx_dir = tmp_path / "context"
+    ctx_dir.mkdir()
+    (ctx_dir / "context_sakurazaka_chokosaku.md").write_text("CHOKOSAKU-CTX", encoding="utf-8")
+    (ctx_dir / "members_sakurazaka.md").write_text("", encoding="utf-8")
+    monkeypatch.setattr(pipeline, "CONTEXT_DIR", ctx_dir)
+
+    received = {}
+    orig = transcribe.build_transcribe_prompts
+    def spy(ctx, members, additional_context=None):
+        received["context_md"] = ctx
+        return orig(ctx, members, additional_context=additional_context)
+    monkeypatch.setattr("app.transcribe.build_transcribe_prompts", spy)
+
+    job = pipeline.create_job(make_params(
+        group="sakurazaka", context_preset="sakurazaka_chokosaku"
+    ))
+    pipeline.run_job(job.id)
+    assert received.get("context_md") == "CHOKOSAKU-CTX"
+
+
+def test_missing_context_preset_fails_job(env, monkeypatch, tmp_path):
+    ctx_dir = tmp_path / "context"
+    ctx_dir.mkdir()
+    monkeypatch.setattr(pipeline, "CONTEXT_DIR", ctx_dir)
+
+    job = pipeline.create_job(make_params(
+        group="sakurazaka", context_preset="nonexistent"
+    ))
+    pipeline.run_job(job.id)
+    assert job.status == "failed"
+    assert "nonexistent" in (job.error or "")
+
+
+def test_read_context_loads_group_prefixed_members(env, monkeypatch, tmp_path):
+    ctx_dir = tmp_path / "context"
+    ctx_dir.mkdir()
+    (ctx_dir / "context_sakurazaka_sokomagattara.md").write_text("SOKO-CTX", encoding="utf-8")
+    (ctx_dir / "members_sakurazaka.md").write_text("SAKURA-MEMBERS", encoding="utf-8")
+    monkeypatch.setattr(pipeline, "CONTEXT_DIR", ctx_dir)
+
+    received = {}
+    orig = transcribe.build_transcribe_prompts
+    def spy(ctx, members, additional_context=None):
+        received["context_md"] = ctx
+        received["members_md"] = members
+        return orig(ctx, members, additional_context=additional_context)
+    monkeypatch.setattr("app.transcribe.build_transcribe_prompts", spy)
+
+    job = pipeline.create_job(make_params(
+        group="sakurazaka", context_preset="sakurazaka_sokomagattara"
+    ))
+    pipeline.run_job(job.id)
+    assert received.get("context_md") == "SOKO-CTX"
+    assert received.get("members_md") == "SAKURA-MEMBERS"
+
+
+def test_read_context_else_returns_empty_strings(env, monkeypatch, tmp_path):
+    ctx_dir = tmp_path / "context"
+    ctx_dir.mkdir()
+    monkeypatch.setattr(pipeline, "CONTEXT_DIR", ctx_dir)
+
+    received = {}
+    orig = transcribe.build_transcribe_prompts
+    def spy(ctx, members, additional_context=None):
+        received["context_md"] = ctx
+        received["members_md"] = members
+        return orig(ctx, members, additional_context=additional_context)
+    monkeypatch.setattr("app.transcribe.build_transcribe_prompts", spy)
+
+    job = pipeline.create_job(make_params(
+        group="else", context_preset="",
+        additional_context="Custom context for a random vlog"
+    ))
+    pipeline.run_job(job.id)
+    assert received.get("context_md") == ""
+    assert received.get("members_md") == ""
