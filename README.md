@@ -1,6 +1,14 @@
 # SubtitledByAI
 
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-supported-2496ED?logo=docker&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini-2.5_Pro%2FFlash-4285F4?logo=google&logoColor=white)
+![yt-dlp](https://img.shields.io/badge/yt--dlp-latest-FF0000?logo=youtube&logoColor=white)
+
 Aplikasi localhost untuk membuat subtitle Bahasa Indonesia (.ass / .srt) dari video variety show idol Jepang — transkripsi via Gemini 2.5 Pro, terjemahan via Gemini 2.5 Flash (atau GPT-4o / Claude).
+
+![Preview](media/preview_page.png)
 
 Mendukung tiga grup dengan pilihan show masing-masing:
 
