@@ -1,0 +1,46 @@
+# .dockerignore — tells Docker which files to SKIP when copying into the image.
+# Works exactly like .gitignore but for Docker builds.
+# Keeping the image lean = faster builds and smaller image size.
+
+# Never copy secrets into the image
+.env
+cookie.txt
+
+# Job output — large and machine-specific, served via volume instead
+output/
+
+# Git history — not needed inside the container
+.git/
+.gitignore
+
+# Python bytecode cache — regenerated automatically
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Virtual environments — the container uses its own pip install
+.venv/
+venv/
+env/
+
+# Dev/planning files — not needed to run the app
+# Note: requirements.txt is NOT excluded — the Dockerfile needs it for pip install
+docs/
+resume.txt
+plan_html.txt
+task18_plan_extract.txt
+non_ascii_contexts.txt
+code_review_details.txt
+*.md
+*.json
+SPEC-*.md
+pytest.ini
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Superpowers/tooling scratch
+.superpowers/

@@ -1,0 +1,51 @@
+# docker-compose.yml — the "run instructions" for your app.
+# Instead of typing a long "docker run ..." command every time,
+# you just type: docker compose up
+# And Docker reads this file to know exactly how to start everything.
+
+services:
+
+  # "app" is the name of our service. You can call it anything.
+  app:
+
+    # "build: ." means: build the Docker image using the Dockerfile
+    # in the current directory (the dot = current folder).
+    build: .
+
+    # Port mapping: "host_port:container_port"
+    # This means: when you open localhost:8000 in your browser,
+    # Docker forwards that to port 8000 inside the container.
+    ports:
+      - "8000:8000"
+
+    # env_file: load environment variables from your .env file.
+    # This is how your API keys (GEMINI_API_KEY, etc.) get into the container
+    # without being baked into the image itself.
+    # NEVER commit your .env file to git — it contains secrets.
+    env_file:
+      - .env
+
+    # volumes: connect folders/files from your real machine to the container.
+    # Format: "real_machine_path:container_path"
+    #
+    # Why volumes? Containers are temporary — anything written inside them
+    # disappears when the container stops. Volumes are the "shared drawer"
+    # between your machine and the container.
+    volumes:
+      # output/ — where subtitle files, transcripts, and job data are saved.
+      # Without this, your generated subtitles would vanish on every restart.
+      - ./output:/app/output
+
+      # context/ — your member rosters and show context files.
+      # Mounting this means you can edit members_sakurazaka.md etc. directly
+      # on your machine and the change is immediately visible inside the container.
+      - ./context:/app/context
+
+      # cookie.txt — your YouTube login cookie for region-locked videos.
+      # Mounted as a single file (not a folder).
+      # If you don't use cookies, leave the file empty.
+      - ./cookie.txt:/app/cookie.txt
+
+    # restart: unless-stopped means the container automatically restarts
+    # if it crashes, but NOT when you explicitly stop it with "docker compose down".
+    restart: unless-stopped
