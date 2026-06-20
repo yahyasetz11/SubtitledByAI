@@ -19,32 +19,32 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 
 Gunakan terjemahan berikut secara konsisten:
 
-| Jepang | Romaji | Terjemahan Indonesia |
-|---|---|---|
+| Jepang                 | Romaji                    | Terjemahan Indonesia                            |
+| ---------------------- | ------------------------- | ----------------------------------------------- |
 | そこ曲がったら、櫻坂？ | Sokomagattara Sakurazaka? | Sokomagattara Sakurazaka (jangan diterjemahkan) |
-| 合宿 | gasshuku | training camp |
-| 選抜 | senbatsu | senbatsu (biarkan, istilah dikenal fans) |
-| センター | sentaa | center / posisi center |
-| 推し | oshi | oshi (biarkan) |
-| 握手会 | akushukai | meet & greet |
-| ライブ | raibu | konser / live |
-| 振り付け | furitsuke | koreografi |
-| 歌詞 | kashi | lirik |
-| キャプテン | kyaputen | kapten |
-| 先輩 | senpai | senpai (biarkan) |
-| 後輩 | kouhai | kouhai (biarkan) |
-| 収録 | shuuroku | syuting / rekaman |
-| 乃木坂 | Nogizaka | Nogizaka (biarkan) |
-| 欅坂 | Keyakizaka | Keyakizaka (biarkan) |
-| 櫻坂 | Sakurazaka | Sakurazaka (biarkan) |
-| 運営 | un'ei | manajemen |
-| ファン | fan | penggemar / fans |
-| Buddies | — | Buddies (nama fandom Sakurazaka46, biarkan) |
-| 番組 | bangumi | acara / program |
-| 罰ゲーム | batsu game | hukuman |
-| ドッキリ | dokkiri | prank |
-| VTR | — | video / VTR |
-| テロップ | teroppu | teks layar |
+| 合宿                   | gasshuku                  | training camp                                   |
+| 選抜                   | senbatsu                  | senbatsu (biarkan, istilah dikenal fans)        |
+| センター               | sentaa                    | center / posisi center                          |
+| 推し                   | oshi                      | oshi (biarkan)                                  |
+| 握手会                 | akushukai                 | meet & greet                                    |
+| ライブ                 | raibu                     | konser / live                                   |
+| 振り付け               | furitsuke                 | koreografi                                      |
+| 歌詞                   | kashi                     | lirik                                           |
+| キャプテン             | kyaputen                  | kapten                                          |
+| 先輩                   | senpai                    | senpai (biarkan)                                |
+| 後輩                   | kouhai                    | kouhai (biarkan)                                |
+| 収録                   | shuuroku                  | syuting / rekaman                               |
+| 乃木坂                 | Nogizaka                  | Nogizaka (biarkan)                              |
+| 欅坂                   | Keyakizaka                | Keyakizaka (biarkan)                            |
+| 櫻坂                   | Sakurazaka                | Sakurazaka (biarkan)                            |
+| 運営                   | un'ei                     | manajemen                                       |
+| ファン                 | fan                       | penggemar / fans                                |
+| Buddies                | —                         | Buddies (nama fandom Sakurazaka46, biarkan)     |
+| 番組                   | bangumi                   | acara / program                                 |
+| 罰ゲーム               | batsu game                | hukuman                                         |
+| ドッキリ               | dokkiri                   | prank                                           |
+| VTR                    | —                         | video / VTR                                     |
+| テロップ               | teroppu                   | teks layar                                      |
 
 ---
 
@@ -53,6 +53,7 @@ Gunakan terjemahan berikut secara konsisten:
 Target: **Bahasa Indonesia informal yang natural — santai tapi tidak terlalu slang.**
 
 ### Aturan wajib
+
 1. Pronoun: **"aku/kamu"**. JANGAN PERNAH pakai "Anda", "saya" (kecuali konteks sangat formal seperti pengumuman resmi), dan JANGAN pakai "gue/lo".
 2. Partikel percakapan boleh dan dianjurkan secukupnya: **sih, dong, kan, loh, deh, nih, ya**.
 3. DILARANG slang Jaksel / campuran Inggris yang tidak perlu ("literally", "which is", "you know").

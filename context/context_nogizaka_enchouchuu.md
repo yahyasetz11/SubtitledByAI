@@ -9,28 +9,28 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 
 - **Judul:** 乃木坂工事中のんびり延長中 (Nogizaka Kouji Enchouchuu) — dalam subtitle selalu ditulis **"Nogizaka Kouji Enchouchuu"**, jangan diterjemahkan.
 - **Format:** extended episode dari Nogizaka Kojichuu — format lebih santai, durasi lebih panjang, sering berisi segmen bonus atau obrolan lebih bebas.
-- **MC:** duo komedian **バナナマン (Bananaman)** — **日村勇紀 (Himura Yuuki)** dipanggil **"Himura"** dan **設楽統 (Shitara Osamu)** dipanggil **"Shitara"**.
+- **MC:** 5–7 member Nogizaka46 per episode. Tidak ada MC tetap dari luar — 1–2 member bertindak sebagai MC/pembawa acara per segmen.
 - Member Nogizaka46 yang tampil mengikuti episode utama. Ejaan nama mengikuti `members_nogizaka.md`.
 
 ---
 
 ## 2. Glossary Istilah
 
-| Jepang             | Romaji              | Terjemahan Indonesia                                |
-|--------------------|---------------------|-----------------------------------------------------|
-| 乃木坂工事中       | Nogizaka Kojichuu   | Nogizaka Kojichuu (jangan diterjemahkan)            |
-| のんびり延長中     | Enchouchuu          | Enchouchuu (keep as-is)                             |
-| 選抜               | senbatsu            | senbatsu (biarkan)                                  |
-| センター           | sentaa              | center / posisi center                              |
-| 推し               | oshi                | oshi (biarkan)                                      |
-| ライブ             | raibu               | konser / live                                       |
-| キャプテン         | kyaputen            | kapten                                              |
-| 先輩               | senpai              | senpai (biarkan)                                    |
-| 後輩               | kouhai              | kouhai (biarkan)                                    |
-| 収録               | shuuroku            | syuting / rekaman                                   |
-| 運営               | un'ei               | manajemen                                           |
-| 番組               | bangumi             | acara / program                                     |
-| テロップ           | teroppu             | teks layar                                          |
+| Jepang         | Romaji            | Terjemahan Indonesia                     |
+| -------------- | ----------------- | ---------------------------------------- |
+| 乃木坂工事中   | Nogizaka Kojichuu | Nogizaka Kojichuu (jangan diterjemahkan) |
+| のんびり延長中 | Enchouchuu        | Enchouchuu (keep as-is)                  |
+| 選抜           | senbatsu          | senbatsu (biarkan)                       |
+| センター       | sentaa            | center / posisi center                   |
+| 推し           | oshi              | oshi (biarkan)                           |
+| ライブ         | raibu             | konser / live                            |
+| キャプテン     | kyaputen          | kapten                                   |
+| 先輩           | senpai            | senpai (biarkan)                         |
+| 後輩           | kouhai            | kouhai (biarkan)                         |
+| 収録           | shuuroku          | syuting / rekaman                        |
+| 運営           | un'ei             | manajemen                                |
+| 番組           | bangumi           | acara / program                          |
+| テロップ       | teroppu           | teks layar                               |
 
 ---
 
@@ -39,6 +39,7 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 Target: **Bahasa Indonesia informal yang natural — santai tapi tidak terlalu slang.**
 
 ### Aturan wajib
+
 1. Pronoun: **"aku/kamu"**. JANGAN PERNAH pakai "Anda", "saya" (kecuali konteks formal), JANGAN pakai "gue/lo".
 2. Partikel percakapan boleh: **sih, dong, kan, loh, deh, nih, ya**.
 3. DILARANG slang Jaksel / campuran Inggris yang tidak perlu.

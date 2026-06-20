@@ -7,7 +7,7 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 
 ## 1. Tentang Acara
 
-- **Judul:** Hinatazaka Channel (日向坂チャンネル) — dalam subtitle selalu ditulis **"Hinatazaka Channel"**, jangan diterjemahkan.
+- **Judul:** Hinatazaka Channel (日向坂ちゃんねる) — dalam subtitle selalu ditulis **"Hinatazaka Channel"**, jangan diterjemahkan.
 - **Format:** konten YouTube Hinatazaka46. Biasanya berupa vlog member, challenge, talk santai, atau behind-the-scenes tanpa MC tetap.
 - **Pembawa acara:** Bervariasi per video — bisa member solo, duo, atau grup kecil. Tidak ada MC tetap.
 - Ejaan nama member mengikuti `members_hinatazaka.md`.
@@ -16,18 +16,18 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 
 ## 2. Glossary Istilah
 
-| Jepang               | Romaji           | Terjemahan Indonesia                               |
-|----------------------|------------------|----------------------------------------------------|
-| 日向坂チャンネル     | Hinatazaka Channel | Hinatazaka Channel (jangan diterjemahkan)        |
-| おひさま             | Ohisama          | Ohisama (nama fandom, keep as-is)                  |
-| 配信                 | haishin          | streaming / siaran                                 |
-| 推し                 | oshi             | oshi (biarkan)                                     |
-| 先輩                 | senpai           | senpai (biarkan)                                   |
-| 後輩                 | kouhai           | kouhai (biarkan)                                   |
-| 収録                 | shuuroku         | syuting / rekaman                                  |
-| チャンネル           | channeru         | channel                                            |
-| 登録                 | touroku          | subscribe / berlangganan                           |
-| コメント             | komento          | komentar                                           |
+| Jepang           | Romaji             | Terjemahan Indonesia                      |
+| ---------------- | ------------------ | ----------------------------------------- |
+| 日向坂チャンネル | Hinatazaka Channel | Hinatazaka Channel (jangan diterjemahkan) |
+| おひさま         | Ohisama            | Ohisama (nama fandom, keep as-is)         |
+| 配信             | haishin            | streaming / siaran                        |
+| 推し             | oshi               | oshi (biarkan)                            |
+| 先輩             | senpai             | senpai (biarkan)                          |
+| 後輩             | kouhai             | kouhai (biarkan)                          |
+| 収録             | shuuroku           | syuting / rekaman                         |
+| ちゃんねる       | channeru           | channel                                   |
+| 登録             | touroku            | subscribe / berlangganan                  |
+| コメント         | komento            | komentar                                  |
 
 ---
 
@@ -36,6 +36,7 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 Target: **Bahasa Indonesia informal yang natural — santai tapi tidak terlalu slang.**
 
 ### Aturan wajib
+
 1. Pronoun: **"aku/kamu"**. JANGAN PERNAH pakai "Anda", "saya", JANGAN pakai "gue/lo".
 2. Partikel percakapan boleh: **sih, dong, kan, loh, deh, nih, ya**.
 3. DILARANG slang Jaksel / campuran Inggris yang tidak perlu.
