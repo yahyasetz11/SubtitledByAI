@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
 <meta charset="utf-8">
-<title>Sokomagattara SubGen</title>
+<title>SubtitledByAI</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 /* ── Reset ──────────────────────────────────────────────────────── */
@@ -486,8 +486,8 @@ textarea:focus {
 
   <!-- ── Header ── -->
   <header>
-    <h1>Sokomagattara <span class="gradient-text">SubGen</span></h1>
-    <p class="tagline">Transkripsi JP → Terjemahan ID → Subtitle .ass / .srt</p>
+    <h1>Subtitled<span class="gradient-text">ByAI</span></h1>
+    <p class="tagline">Subtitle otomatis untuk konten Sakurazaka46, Nogizaka46, dan Hinatazaka46</p>
   </header>
 
   <div id="config-banner" class="banner hidden"></div>
@@ -548,20 +548,40 @@ textarea:focus {
       <div class="divider" id="form-divider"></div>
 
       <div class="field">
-        <label class="field-label" for="additional_context">Konteks Video (Opsional)</label>
+        <label class="field-label" for="additional_context">
+          Konteks Video
+          <span id="ctx-required-badge" class="hidden"
+            style="color:#ff6b6b;font-size:.8rem;margin-left:6px;">* Wajib diisi</span>
+          <span id="ctx-optional-badge" style="color:var(--muted2);font-size:.8rem;margin-left:6px;">(Opsional)</span>
+        </label>
         <textarea id="additional_context" rows="2"
           placeholder="Contoh: Vlog Moriya Rena memancing di Kanagawa. Tulis konteks singkat agar Gemini tidak salah tebak."></textarea>
+        <p id="ctx-else-hint" class="hidden"
+          style="color:#ff6b6b;font-size:.82rem;margin-top:4px;">
+          Pilihan "Else / Other" tidak menggunakan preset — wajib isi konteks di atas.
+        </p>
       </div>
 
       <div class="field">
+        <label class="field-label" for="group_select">Grup</label>
+        <select id="group_select" style="margin-bottom:8px;">
+          <option value="">Memuat...</option>
+        </select>
+      </div>
+
+      <div class="field" id="show-field">
+        <label class="field-label" for="context_preset">Acara / Konten</label>
+        <select id="context_preset" style="margin-bottom:8px;">
+          <option value="">Pilih grup terlebih dahulu</option>
+        </select>
         <button type="button" class="collapsible-toggle" id="ctx-toggle">
           <span class="ctx-arrow" id="ctx-arrow">▶</span>
-          <span>Lihat / Edit context.md</span>
+          <span>Lihat / Edit konteks</span>
         </button>
         <div class="collapsible-body" id="ctx-body">
           <textarea id="context_override" rows="8"
             style="margin-top:8px; font-family:'JetBrains Mono',Consolas,monospace; font-size:.78rem;"
-            placeholder="Memuat context.md..."></textarea>
+            placeholder="Memuat konteks..."></textarea>
         </div>
       </div>
 
@@ -832,11 +852,24 @@ function listen(id) {
 $("job-form").addEventListener("submit", async e => {
   e.preventDefault();
   const source = document.querySelector('input[name="source"]:checked').value;
+  const groupVal = $("group_select").value;
+  const additionalCtx = $("additional_context").value.trim();
+
+  // Validate: Else requires additional context
+  if (groupVal === "else" && !additionalCtx) {
+    $("additional_context").focus();
+    $("additional_context").style.outline = "2px solid #ff6b6b";
+    setTimeout(() => { $("additional_context").style.outline = ""; }, 2000);
+    return;
+  }
+
   const fd = new FormData();
   fd.append("source", source);
   fd.append("translator", $("translator").value);
   fd.append("output_format", $("output_format").value);
-  fd.append("additional_context", $("additional_context").value.trim());
+  fd.append("additional_context", additionalCtx);
+  fd.append("group", groupVal);
+  fd.append("context_preset", $("context_preset").value);
   fd.append("context_override", $("context_override").value.trim());
   if (source === "url") {
     fd.append("url", $("url").value.trim());
@@ -937,23 +970,82 @@ $("continue-btn").addEventListener("click", async () => {
   listen(sessionId);
 });
 
-// ── Context.md fetch ──────────────────────────────────────────────
-async function loadContext() {
+// ── Context group + show selector ────────────────────────────────
+let groupsData = [];  // [{id, label, shows:[{id,label}]}]
+
+async function loadContextForPreset(preset) {
+  if (!preset) { $("context_override").value = ""; return; }
   try {
-    const data = await (await fetch("/api/context")).json();
+    const data = await (await fetch(`/api/context?preset=${encodeURIComponent(preset)}`)).json();
     $("context_override").value = data.context_md || "";
   } catch (e) {
-    $("context_override").placeholder = "Gagal memuat context.md: " + e;
+    $("context_override").placeholder = "Gagal memuat konteks: " + e;
   }
 }
 
-// ── Collapsible context.md ────────────────────────────────────────
+function onGroupChange() {
+  const groupId = $("group_select").value;
+  const group = groupsData.find(g => g.id === groupId);
+  const isElse = groupId === "else";
+
+  // Show/hide show dropdown
+  $("show-field").classList.toggle("hidden", isElse);
+
+  // Show/hide required badge and hint
+  $("ctx-required-badge").classList.toggle("hidden", !isElse);
+  $("ctx-optional-badge").classList.toggle("hidden", isElse);
+  $("ctx-else-hint").classList.toggle("hidden", !isElse);
+
+  if (isElse) {
+    $("context_preset").value = "";
+    $("context_override").value = "";
+    return;
+  }
+
+  // Populate show dropdown
+  const sel = $("context_preset");
+  sel.innerHTML = "";
+  if (group && group.shows.length > 0) {
+    for (const show of group.shows) {
+      const opt = document.createElement("option");
+      opt.value = show.id;
+      opt.textContent = show.label;
+      sel.appendChild(opt);
+    }
+    loadContextForPreset(sel.value);
+  }
+}
+
+async function loadGroups() {
+  try {
+    const data = await (await fetch("/api/contexts")).json();
+    groupsData = data.groups || [];
+    const sel = $("group_select");
+    sel.innerHTML = "";
+    for (const g of groupsData) {
+      const opt = document.createElement("option");
+      opt.value = g.id;
+      opt.textContent = g.label;
+      if (g.id === "sakurazaka") opt.selected = true;
+      sel.appendChild(opt);
+    }
+    onGroupChange();
+  } catch (e) {
+    $("group_select").innerHTML = '<option value="">Gagal memuat grup</option>';
+  }
+}
+
+$("group_select").addEventListener("change", onGroupChange);
+$("context_preset").addEventListener("change", () => {
+  loadContextForPreset($("context_preset").value);
+});
+
+// ── Collapsible context editor ────────────────────────────────────
 $("ctx-toggle").addEventListener("click", () => {
   const body = $("ctx-body");
   const arrow = $("ctx-arrow");
   const open = body.classList.toggle("open");
   arrow.classList.toggle("open", open);
-  if (open && !$("context_override").value) loadContext();
 });
 
 $("gemini-key-sel").addEventListener("change", async () => {
@@ -965,7 +1057,7 @@ $("gemini-key-sel").addEventListener("change", async () => {
 });
 
 loadConfig();
-loadContext();
+loadGroups();
 </script>
 </body>
 </html>
