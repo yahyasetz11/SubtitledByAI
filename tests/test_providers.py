@@ -296,3 +296,32 @@ def test_set_active_gemini_key_to_default_restores_base_key(monkeypatch):
     set_active_gemini_key("Default")
     cfg = Config.load()
     assert cfg.gemini_api_key == "g-default"
+
+
+def test_load_models_config_returns_expected_keys():
+    from app.providers import load_models_config
+    cfg = load_models_config()
+    assert "transcription" in cfg
+    assert "translation" in cfg
+    assert "defaults" in cfg
+
+
+def test_models_config_transcription_list_nonempty():
+    from app.providers import load_models_config
+    cfg = load_models_config()
+    assert len(cfg["transcription"]) > 0
+
+
+def test_models_config_defaults_match_lists():
+    from app.providers import load_models_config
+    cfg = load_models_config()
+    assert cfg["defaults"]["transcription"] in cfg["transcription"]
+    assert cfg["defaults"]["translation"]["gemini"] in cfg["translation"]["gemini"]
+    assert cfg["defaults"]["translation"]["openai"] in cfg["translation"]["openai"]
+    assert cfg["defaults"]["translation"]["anthropic"] in cfg["translation"]["anthropic"]
+
+
+def test_models_config_path_exists():
+    from pathlib import Path
+    from app.providers import MODELS_CONFIG_PATH
+    assert MODELS_CONFIG_PATH.exists()

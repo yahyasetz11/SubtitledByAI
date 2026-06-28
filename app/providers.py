@@ -15,6 +15,13 @@ class ConfigError(Exception):
     """Startup configuration problem; message is shown to the user."""
 
 
+MODELS_CONFIG_PATH = Path(__file__).parent.parent / "config" / "models.json"
+
+
+def load_models_config() -> dict:
+    return json.loads(MODELS_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
 def _clean_cookies_value(raw: str | None) -> str | None:
     """python-dotenv keeps the comment as the value for lines like
     `YTDLP_COOKIES_FILE=   # komentar`; treat such values as unset."""
