@@ -5,3 +5,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# Claude working artifacts
+code_review_details.txt
+encoding_check.json
+non_ascii_contexts.txt
+plan_html.txt
+resume.txt
+task18_plan_extract.txt
