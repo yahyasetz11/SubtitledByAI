@@ -728,7 +728,7 @@ async function loadConfig() {
     if (!available) continue;
     const opt = document.createElement("option");
     opt.value = prov;
-    opt.textContent = (PROVIDER_LABELS[prov] || prov) + " — " + cfg.translate_models[prov];
+    opt.textContent = PROVIDER_LABELS[prov] || prov;
     sel.appendChild(opt);
   }
 
