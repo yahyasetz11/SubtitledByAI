@@ -339,19 +339,19 @@ class AnthropicClient:
         return _from_anthropic(resp)
 
 
-def make_transcriber(cfg: Config) -> GeminiClient:
-    return GeminiClient(cfg.gemini_api_key, cfg.transcribe_model)
+def make_transcriber(cfg: Config, model: str | None = None) -> GeminiClient:
+    return GeminiClient(cfg.gemini_api_key, model or cfg.transcribe_model)
 
 
-def make_translator(cfg: Config, provider: str):
+def make_translator(cfg: Config, provider: str, model: str | None = None):
     if provider == "gemini":
-        return GeminiClient(cfg.gemini_api_key, cfg.translate_models["gemini"])
+        return GeminiClient(cfg.gemini_api_key, model or cfg.translate_models["gemini"])
     if provider == "openai":
         if not cfg.openai_api_key:
             raise ConfigError("OPENAI_API_KEY belum diisi di .env")
-        return OpenAIClient(cfg.openai_api_key, cfg.translate_models["openai"])
+        return OpenAIClient(cfg.openai_api_key, model or cfg.translate_models["openai"])
     if provider == "anthropic":
         if not cfg.anthropic_api_key:
             raise ConfigError("ANTHROPIC_API_KEY belum diisi di .env")
-        return AnthropicClient(cfg.anthropic_api_key, cfg.translate_models["anthropic"])
+        return AnthropicClient(cfg.anthropic_api_key, model or cfg.translate_models["anthropic"])
     raise ConfigError(f"Penerjemah tidak dikenal: {provider}")

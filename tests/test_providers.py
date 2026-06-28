@@ -325,3 +325,54 @@ def test_models_config_path_exists():
     from pathlib import Path
     from app.providers import MODELS_CONFIG_PATH
     assert MODELS_CONFIG_PATH.exists()
+
+
+# ---------------------------------------------------------------------------
+# make_transcriber / make_translator model override tests
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, patch
+from app.providers import make_transcriber, make_translator
+
+
+def _fake_cfg():
+    return Config(
+        gemini_api_key="key",
+        openai_api_key="okey",
+        anthropic_api_key="akey",
+        transcribe_model="gemini-2.5-pro",
+        translate_models={"gemini": "gemini-2.5-flash", "openai": "gpt-4o", "anthropic": "claude-sonnet-4-6"},
+        ytdlp_cookies_file=None,
+        sub_min_duration=0.7,
+        sub_max_duration=7.5,
+        sub_merge_gap=0.5,
+        sub_cps_flag=25,
+    )
+
+
+def test_make_transcriber_uses_model_override():
+    cfg = _fake_cfg()
+    with patch("app.providers.GeminiClient") as MockClient:
+        make_transcriber(cfg, model="gemini-3.1-pro-preview")
+        MockClient.assert_called_once_with(cfg.gemini_api_key, "gemini-3.1-pro-preview")
+
+
+def test_make_transcriber_falls_back_to_cfg_model():
+    cfg = _fake_cfg()
+    with patch("app.providers.GeminiClient") as MockClient:
+        make_transcriber(cfg)
+        MockClient.assert_called_once_with(cfg.gemini_api_key, "gemini-2.5-pro")
+
+
+def test_make_translator_uses_model_override():
+    cfg = _fake_cfg()
+    with patch("app.providers.GeminiClient") as MockClient:
+        make_translator(cfg, "gemini", model="gemini-3.5-flash")
+        MockClient.assert_called_once_with(cfg.gemini_api_key, "gemini-3.5-flash")
+
+
+def test_make_translator_falls_back_to_cfg_model():
+    cfg = _fake_cfg()
+    with patch("app.providers.GeminiClient") as MockClient:
+        make_translator(cfg, "gemini")
+        MockClient.assert_called_once_with(cfg.gemini_api_key, "gemini-2.5-flash")
