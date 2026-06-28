@@ -587,8 +587,8 @@ textarea:focus {
 
       <div class="field-row">
         <div class="field">
-          <label class="field-label" for="translator">Model translasi</label>
-          <select id="translator"></select>
+          <label class="field-label" for="transcribe_model">Model transkripsi</label>
+          <select id="transcribe_model"></select>
         </div>
         <div class="field">
           <label class="field-label" for="output_format">Format output</label>
@@ -597,6 +597,17 @@ textarea:focus {
             <option value="ass">.ass saja</option>
             <option value="srt">.srt saja</option>
           </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label" for="translator">Model translasi</label>
+          <select id="translator"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="translate_model">Varian model terjemahan</label>
+          <select id="translate_model"></select>
         </div>
       </div>
 
@@ -679,6 +690,20 @@ let jobId = null, es = null;
 
 const PROVIDER_LABELS = { gemini:"Gemini", openai:"OpenAI", anthropic:"Anthropic Claude" };
 
+function populateTranslateModelDropdown(modelsConfig, provider) {
+  const sel = $("translate_model");
+  sel.innerHTML = "";
+  const models = (modelsConfig.translation && modelsConfig.translation[provider]) || [];
+  const def = modelsConfig.defaults && modelsConfig.defaults.translation && modelsConfig.defaults.translation[provider];
+  for (const m of models) {
+    const opt = document.createElement("option");
+    opt.value = m;
+    opt.textContent = m;
+    if (m === def) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
 const STAGES = ["download","normalize","chunk","transcribe","translate","format"];
 const PIPE_ICONS = { download:"D", normalize:"N", chunk:"C", transcribe:"T", translate:"L", format:"F" };
 
@@ -705,6 +730,24 @@ async function loadConfig() {
     opt.value = prov;
     opt.textContent = (PROVIDER_LABELS[prov] || prov) + " — " + cfg.translate_models[prov];
     sel.appendChild(opt);
+  }
+
+  // Populate model dropdowns
+  if (cfg.models) {
+    // Transcription models
+    const tmSel = $("transcribe_model");
+    tmSel.innerHTML = "";
+    for (const m of (cfg.models.transcription || [])) {
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      if (m === (cfg.models.defaults && cfg.models.defaults.transcription)) opt.selected = true;
+      tmSel.appendChild(opt);
+    }
+    // Translation model variants for current provider
+    populateTranslateModelDropdown(cfg.models, sel.value);
+    // Keep translation model dropdown in sync when provider changes
+    sel.addEventListener("change", () => populateTranslateModelDropdown(cfg.models, sel.value));
   }
 
   // Populate Gemini key selector
@@ -866,6 +909,8 @@ $("job-form").addEventListener("submit", async e => {
   const fd = new FormData();
   fd.append("source", source);
   fd.append("translator", $("translator").value);
+  fd.append("transcribe_model", $("transcribe_model").value);
+  fd.append("translate_model", $("translate_model").value);
   fd.append("output_format", $("output_format").value);
   fd.append("additional_context", additionalCtx);
   fd.append("group", groupVal);
