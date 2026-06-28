@@ -160,10 +160,24 @@ def call_with_retries(fn, *, attempts: int = 4, base_delay: float = 2.0,
 
 # USD per 1M tokens: (input, output). Update when prices change.
 PRICING = {
+    # Gemini 3.x (preview/lite — use 2.5-flash pricing as estimate until official pricing published)
+    "gemini-3.1-pro-preview": (3.50, 10.50),
+    "gemini-3.5-flash": (0.30, 2.50),
+    "gemini-3-flash-preview": (0.30, 2.50),
+    "gemini-3.1-flash-lite": (0.10, 0.40),
+    # Gemini 2.5
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    # OpenAI
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
     "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    # Anthropic
+    "claude-opus-4-8": (15.00, 75.00),
     "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (0.80, 4.00),
 }
 
 

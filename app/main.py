@@ -171,7 +171,10 @@ async def create_job(background_tasks: BackgroundTasks,
     if resolved_transcribe_model not in models_cfg["transcription"]:
         raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
 
-    resolved_translate_model = translate_model.strip() or models_cfg["defaults"]["translation"][translator]
+    translation_defaults = models_cfg["defaults"]["translation"]
+    if not translate_model.strip() and translator not in translation_defaults:
+        raise HTTPException(422, f"translator tidak dikenal: {translator!r}")
+    resolved_translate_model = translate_model.strip() or translation_defaults[translator]
     provider_model_list = models_cfg["translation"].get(translator, [])
     if resolved_translate_model not in provider_model_list:
         raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
