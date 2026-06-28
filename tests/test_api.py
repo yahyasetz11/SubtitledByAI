@@ -302,27 +302,32 @@ def test_sessions_truncates_long_filename(client, tmp_path):
 
 def test_config_includes_models_list(client, monkeypatch):
     monkeypatch.setattr("app.audio.ensure_ffmpeg", lambda: True)
+    models_cfg = load_models_config()
     body = client.get("/api/config").json()
     assert "models" in body
     models = body["models"]
     assert "transcription" in models
     assert "translation" in models
     assert "defaults" in models
-    assert "gemini-3.1-pro-preview" in models["transcription"]
+    assert models_cfg["defaults"]["transcription"] in models["transcription"]
 
 
 def test_create_job_accepts_transcribe_model(client, fake_run):
-    resp = post_url_job(client, transcribe_model="gemini-2.5-flash")
+    models_cfg = load_models_config()
+    model = models_cfg["transcription"][0]
+    resp = post_url_job(client, transcribe_model=model)
     assert resp.status_code == 200
     job = pipeline.JOBS[resp.json()["job_id"]]
-    assert job.params["transcribe_model"] == "gemini-2.5-flash"
+    assert job.params["transcribe_model"] == model
 
 
 def test_create_job_accepts_translate_model(client, fake_run):
-    resp = post_url_job(client, translate_model="gemini-3.5-flash")
+    models_cfg = load_models_config()
+    model = models_cfg["translation"]["gemini"][0]
+    resp = post_url_job(client, translate_model=model)
     assert resp.status_code == 200
     job = pipeline.JOBS[resp.json()["job_id"]]
-    assert job.params["translate_model"] == "gemini-3.5-flash"
+    assert job.params["translate_model"] == model
 
 
 def test_create_job_unknown_transcribe_model_rejected(client):
@@ -341,3 +346,11 @@ def test_create_job_empty_model_uses_default(client, fake_run):
     assert resp.status_code == 200
     job = pipeline.JOBS[resp.json()["job_id"]]
     assert job.params["transcribe_model"] == models_cfg["defaults"]["transcription"]
+
+
+def test_create_job_empty_translate_model_uses_default(client, fake_run):
+    models_cfg = load_models_config()
+    resp = post_url_job(client, translator="gemini", translate_model="")
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["translate_model"] == models_cfg["defaults"]["translation"]["gemini"]
