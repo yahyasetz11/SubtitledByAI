@@ -47,16 +47,18 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr("app.audio.cut_chunk", fake_cut)
     monkeypatch.setattr("app.transcribe.transcribe_chunk", fake_transcribe_chunk)
     monkeypatch.setattr("app.translate.translate_batch", fake_translate_batch)
-    monkeypatch.setattr("app.providers.make_transcriber", lambda cfg: object())
+    monkeypatch.setattr("app.providers.make_transcriber", lambda cfg, model=None: object())
     monkeypatch.setattr("app.providers.make_translator",
-                        lambda cfg, p: object())
+                        lambda cfg, p, model=None: object())
     return counters
 
 
 def make_params(**overrides):
     params = {"source": "url", "url": "https://youtu.be/x", "save_mp4": False,
               "translator": "gemini", "output_format": "both",
-              "original_filename": None}
+              "original_filename": None,
+              "transcribe_model": "gemini-3.1-pro-preview",
+              "translate_model": "gemini-3.5-flash"}
     params.update(overrides)
     return params
 
@@ -250,3 +252,31 @@ def test_read_context_else_returns_empty_strings(env, monkeypatch, tmp_path):
     pipeline.run_job(job.id)
     assert received.get("context_md") == ""
     assert received.get("members_md") == ""
+
+
+def test_pipeline_passes_transcribe_model_to_maker(env, tmp_path, monkeypatch):
+    called_with = {}
+
+    def fake_maker(cfg, model=None):
+        called_with["model"] = model
+        return object()
+
+    monkeypatch.setattr("app.providers.make_transcriber", fake_maker)
+    params = make_params(transcribe_model="gemini-2.5-flash")
+    job = pipeline.create_job(params)
+    pipeline.run_job(job.id)
+    assert called_with["model"] == "gemini-2.5-flash"
+
+
+def test_pipeline_passes_translate_model_to_maker(env, tmp_path, monkeypatch):
+    called_with = {}
+
+    def fake_maker(cfg, provider, model=None):
+        called_with["model"] = model
+        return object()
+
+    monkeypatch.setattr("app.providers.make_translator", fake_maker)
+    params = make_params(translate_model="gemini-3.5-flash")
+    job = pipeline.create_job(params)
+    pipeline.run_job(job.id)
+    assert called_with["model"] == "gemini-3.5-flash"

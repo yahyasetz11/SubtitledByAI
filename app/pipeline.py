@@ -207,7 +207,7 @@ def _stage_transcribe(job: Job, cfg, tracker,
     additional_context = job.params.get("additional_context") or None
     system, user = transcribe.build_transcribe_prompts(context_md, members_md,
                                                        additional_context=additional_context)
-    gemini = providers.make_transcriber(cfg)
+    gemini = providers.make_transcriber(cfg, model=job.params.get("transcribe_model"))
     n = len(chunks)
     _emit(job, "transcribe", "start", f"transkripsi {n} chunk")
     per_chunk: list[list[transcribe.Utterance]] = []
@@ -280,7 +280,10 @@ def _stage_translate(job: Job, cfg, tracker,
     additional_context = job.params.get("additional_context") or None
     system = translate.build_translate_system(context_md, members_md,
                                               additional_context=additional_context)
-    client = providers.make_translator(cfg, job.params["translator"])
+    client = providers.make_translator(
+        cfg, job.params["translator"],
+        model=job.params.get("translate_model") or None,
+    )
     _emit(job, "translate", "start",
           f"terjemahkan {len(utterances)} ujaran via "
           f"{job.params['translator']}")
