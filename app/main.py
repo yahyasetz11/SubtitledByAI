@@ -125,6 +125,7 @@ def get_config() -> dict:
         "ffmpeg": audio.ensure_ffmpeg(),
         "gemini_keys": list(providers.get_all_gemini_keys().keys()),
         "active_gemini_key": providers.get_active_gemini_label(),
+        "models": providers.load_models_config(),
     }
 
 
@@ -158,9 +159,23 @@ async def create_job(background_tasks: BackgroundTasks,
                      context_preset: str = Form("sakurazaka_sokomagattara"),
                      context_override: str = Form(""),
                      additional_context: str = Form(""),
+                     transcribe_model: str = Form(""),
+                     translate_model: str = Form(""),
                      file: UploadFile | None = File(None)) -> dict:
     if output_format not in VALID_FORMATS:
         raise HTTPException(422, f"output_format tidak dikenal: {output_format!r}")
+
+    models_cfg = providers.load_models_config()
+
+    resolved_transcribe_model = transcribe_model.strip() or models_cfg["defaults"]["transcription"]
+    if resolved_transcribe_model not in models_cfg["transcription"]:
+        raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
+
+    resolved_translate_model = translate_model.strip() or models_cfg["defaults"]["translation"].get(translator, "")
+    provider_model_list = models_cfg["translation"].get(translator, [])
+    if resolved_translate_model and resolved_translate_model not in provider_model_list:
+        raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
+
     upload_bytes: bytes | None = None
     upload_name: str | None = None
     if source == "url":
@@ -188,7 +203,9 @@ async def create_job(background_tasks: BackgroundTasks,
               "group": group.strip() or "sakurazaka",
               "context_preset": context_preset.strip() or "sakurazaka_sokomagattara",
               "context_override": context_override.strip() or None,
-              "additional_context": additional_context.strip() or None}
+              "additional_context": additional_context.strip() or None,
+              "transcribe_model": resolved_transcribe_model,
+              "translate_model": resolved_translate_model}
     job = pipeline.create_job(params, upload_bytes=upload_bytes,
                               upload_filename=upload_name)
     background_tasks.add_task(pipeline.run_job, job.id)

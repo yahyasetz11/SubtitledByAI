@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main, pipeline
+from app.providers import load_models_config
 
 
 @pytest.fixture
@@ -293,3 +294,50 @@ def test_sessions_truncates_long_filename(client, tmp_path):
     session = client.get("/api/sessions").json()["sessions"][0]
     assert len(session["label"]) < 120  # label stays reasonable length
     assert "..." in session["label"]
+
+
+# ---------------------------------------------------------------------------
+# Model selection — GET /api/config and POST /api/jobs
+# ---------------------------------------------------------------------------
+
+def test_config_includes_models_list(client, monkeypatch):
+    monkeypatch.setattr("app.audio.ensure_ffmpeg", lambda: True)
+    body = client.get("/api/config").json()
+    assert "models" in body
+    models = body["models"]
+    assert "transcription" in models
+    assert "translation" in models
+    assert "defaults" in models
+    assert "gemini-3.1-pro-preview" in models["transcription"]
+
+
+def test_create_job_accepts_transcribe_model(client, fake_run):
+    resp = post_url_job(client, transcribe_model="gemini-2.5-flash")
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["transcribe_model"] == "gemini-2.5-flash"
+
+
+def test_create_job_accepts_translate_model(client, fake_run):
+    resp = post_url_job(client, translate_model="gemini-3.5-flash")
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["translate_model"] == "gemini-3.5-flash"
+
+
+def test_create_job_unknown_transcribe_model_rejected(client):
+    resp = post_url_job(client, transcribe_model="gpt-999-turbo")
+    assert resp.status_code == 422
+
+
+def test_create_job_unknown_translate_model_rejected(client):
+    resp = post_url_job(client, translator="gemini", translate_model="gpt-999-turbo")
+    assert resp.status_code == 422
+
+
+def test_create_job_empty_model_uses_default(client, fake_run):
+    models_cfg = load_models_config()
+    resp = post_url_job(client, transcribe_model="")
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["transcribe_model"] == models_cfg["defaults"]["transcription"]
