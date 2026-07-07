@@ -132,6 +132,31 @@ def _find_source(job: Job) -> Path | None:
     return matches[0] if matches else None
 
 
+def _find_source_by_ext(job: "Job", ext: str) -> "Path | None":
+    """Return the first file in job.dir matching the given extension."""
+    matches = sorted(job.dir.glob(f"source{ext}"))
+    return matches[0] if matches else None
+
+
+def _load_utterances_from_source(
+    source_type: str,
+    *,
+    json_path: "Path | None" = None,
+    ass_path: "Path | None" = None,
+) -> "list[transcribe.Utterance]":
+    """Load utterances for Translation Only mode from a JSON or .ass file."""
+    if source_type == "json":
+        if json_path is None or not json_path.exists():
+            raise PipelineError("transcript_jp.json tidak ditemukan.")
+        return transcribe.load_transcript(json_path)
+    if source_type == "ass":
+        if ass_path is None or not ass_path.exists():
+            raise PipelineError("File .ass tidak ditemukan.")
+        from app.subtitle import parse_ass_utterances
+        return parse_ass_utterances(ass_path.read_text(encoding="utf-8"))
+    raise ValueError(f"source_type tidak dikenal: {source_type!r}")
+
+
 def _stage_download(job: Job, cfg) -> Path:
     existing = _find_source(job)
     if existing is not None:
@@ -263,6 +288,29 @@ def _stage_transcribe(job: Job, cfg, tracker,
     transcribe.save_transcript(merged, final_path)
     _emit(job, "transcribe", "done", f"{len(merged)} ujaran")
     return merged
+
+
+def _stage_format_transcript(
+    job: "Job", utterances: "list[transcribe.Utterance]"
+) -> list[str]:
+    """Transcription Only: write transcript_jp.json + optional result_jp.ass."""
+    fmt = job.params.get("output_format", "json")
+    _emit(job, "format", "start", f"menyimpan hasil transkripsi ({fmt})")
+    files = ["transcript_jp.json"]
+    if fmt in ("ass", "both"):
+        events = [
+            subtitle.SubEvent(start=u.start, end=u.end, text=u.ja, type=u.type)
+            for u in utterances
+        ]
+        template = (CONTEXT_DIR / "template.ass").read_text(encoding="utf-8")
+        (job.dir / "result_jp.ass").write_text(
+            subtitle.render_ass(events, template), encoding="utf-8"
+        )
+        files.append("result_jp.ass")
+    if (job.dir / "source.mp4").exists():
+        files.append("source.mp4")
+    _emit(job, "format", "done", ", ".join(files))
+    return files
 
 
 def _stage_translate(job: Job, cfg, tracker,
