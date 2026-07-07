@@ -45,7 +45,7 @@ CONTEXT_DIR = Path("context")
 # Allowlist: never serve job.json (contains params) or arbitrary paths.
 DOWNLOADABLE = {"result.ass", "result.srt", "transcript_jp.json",
                 "translated_id.json", "flags.json", "usage.json",
-                "source.mp4"}
+                "source.mp4", "result_jp.ass"}
 VALID_FORMATS = {"ass", "srt", "both"}
 
 
@@ -73,7 +73,7 @@ def get_context(preset: str = Query("sakurazaka_sokomagattara")) -> dict:
 
 
 @app.get("/api/sessions")
-def list_sessions() -> dict:
+def list_sessions(include_done: bool = Query(False)) -> dict:
     output_dir = pipeline.OUTPUT_DIR
     if not output_dir.exists():
         return {"sessions": []}
@@ -89,10 +89,11 @@ def list_sessions() -> dict:
         except Exception:
             continue
         status = meta.get("status", "")
-        if status not in ("failed", "running"):
+        if status not in ("failed", "running") and not (include_done and status == "done"):
             continue
         job_id = meta["id"]
         params = meta.get("params", {})
+        mode = params.get("mode", "full")
         display_name = (params.get("original_filename")
                         or params.get("url")
                         or job_id)
@@ -103,10 +104,18 @@ def list_sessions() -> dict:
             ts = dt.strftime("%Y-%m-%d %H:%M")
         except ValueError:
             ts = job_id[:15]
+        
+        _MODE_LABELS = {
+            "full": "Standard",
+            "transcription_only": "Transcription Only",
+            "translation_only": "Translation Only",
+        }
         sessions.append({
             "id": job_id,
             "label": f"{ts} · {display_name} · {status}",
             "status": status,
+            "mode": mode,
+            "mode_label": _MODE_LABELS.get(mode, mode),
         })
     return {"sessions": sessions}
 
@@ -161,23 +170,42 @@ async def create_job(background_tasks: BackgroundTasks,
                      additional_context: str = Form(""),
                      transcribe_model: str = Form(""),
                      translate_model: str = Form(""),
+                     mode: str = Form("full"),
+                     source_job_id: str = Form(""),
                      file: UploadFile | None = File(None)) -> dict:
-    if output_format not in VALID_FORMATS:
+    VALID_MODES = {"full", "transcription_only", "translation_only"}
+    if mode not in VALID_MODES:
+        raise HTTPException(422, f"mode tidak dikenal: {mode!r}")
+
+    # Transcription Only allows output_format "json" in addition to "ass"/"both"
+    if mode == "transcription_only":
+        if output_format not in {"ass", "json", "both"}:
+            raise HTTPException(
+                422,
+                f"output_format tidak valid untuk Transcription Only: {output_format!r}"
+            )
+    elif output_format not in VALID_FORMATS:
         raise HTTPException(422, f"output_format tidak dikenal: {output_format!r}")
 
     models_cfg = providers.load_models_config()
 
-    resolved_transcribe_model = transcribe_model.strip() or models_cfg["defaults"]["transcription"]
-    if resolved_transcribe_model not in models_cfg["transcription"]:
-        raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
+    if mode != "translation_only":
+        resolved_transcribe_model = transcribe_model.strip() or models_cfg["defaults"]["transcription"]
+        if resolved_transcribe_model not in models_cfg["transcription"]:
+            raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
+    else:
+        resolved_transcribe_model = ""
 
     translation_defaults = models_cfg["defaults"]["translation"]
-    if not translate_model.strip() and translator not in translation_defaults:
-        raise HTTPException(422, f"translator tidak dikenal: {translator!r}")
-    resolved_translate_model = translate_model.strip() or translation_defaults[translator]
-    provider_model_list = models_cfg["translation"].get(translator, [])
-    if resolved_translate_model not in provider_model_list:
-        raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
+    if mode != "transcription_only":
+        if not translate_model.strip() and translator not in translation_defaults:
+            raise HTTPException(422, f"translator tidak dikenal: {translator!r}")
+        resolved_translate_model = translate_model.strip() or translation_defaults[translator]
+        provider_model_list = models_cfg["translation"].get(translator, [])
+        if resolved_translate_model not in provider_model_list:
+            raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
+    else:
+        resolved_translate_model = ""
 
     upload_bytes: bytes | None = None
     upload_name: str | None = None
@@ -189,8 +217,16 @@ async def create_job(background_tasks: BackgroundTasks,
             raise HTTPException(422, "File belum dipilih.")
         upload_bytes = await file.read()
         upload_name = file.filename
+    elif mode == "translation_only" and source_job_id.strip():
+        # Continuity from a prior session — no file upload needed
+        upload_bytes = None
+        upload_name = None
     else:
-        raise HTTPException(422, f"source tidak dikenal: {source!r}")
+        if mode == "translation_only" and file is None and not source_job_id.strip():
+            raise HTTPException(
+                422, "Translation Only butuh file JSON/.ass atau source_job_id.")
+        elif mode != "translation_only":
+            raise HTTPException(422, f"source tidak dikenal: {source!r}")
 
     try:
         cfg = providers.Config.load()
@@ -200,15 +236,22 @@ async def create_job(background_tasks: BackgroundTasks,
         raise HTTPException(
             422, f"API key untuk provider {translator!r} belum diisi di .env.")
 
-    params = {"source": source, "url": url.strip() or None,
-              "translator": translator, "output_format": output_format,
-              "save_mp4": save_mp4, "original_filename": upload_name,
-              "group": group.strip() or "sakurazaka",
-              "context_preset": context_preset.strip() or "sakurazaka_sokomagattara",
-              "context_override": context_override.strip() or None,
-              "additional_context": additional_context.strip() or None,
-              "transcribe_model": resolved_transcribe_model,
-              "translate_model": resolved_translate_model}
+    params = {
+        "mode": mode,
+        "source": source,
+        "url": url.strip() or None,
+        "translator": translator,
+        "output_format": output_format,
+        "save_mp4": save_mp4,
+        "original_filename": upload_name,
+        "group": group.strip() or "sakurazaka",
+        "context_preset": context_preset.strip() or "sakurazaka_sokomagattara",
+        "context_override": context_override.strip() or None,
+        "additional_context": additional_context.strip() or None,
+        "transcribe_model": resolved_transcribe_model,
+        "translate_model": resolved_translate_model,
+        "source_job_id": source_job_id.strip() or None,
+    }
     job = pipeline.create_job(params, upload_bytes=upload_bytes,
                               upload_filename=upload_name)
     background_tasks.add_task(pipeline.run_job, job.id)
