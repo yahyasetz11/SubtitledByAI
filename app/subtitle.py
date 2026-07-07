@@ -1,6 +1,7 @@
 """Deterministic subtitle post-processing + .ass/.srt rendering (§7, §8)."""
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass
 
 
@@ -177,8 +178,6 @@ def render_srt(events: list[SubEvent]) -> str:
 # .ass parser — used by Translation Only mode
 # ---------------------------------------------------------------------------
 
-import re as _re  # noqa: E402
-
 _ASS_DIALOGUE_RE = _re.compile(
     r"^Dialogue:\s*\d+,"          # layer
     r"(\d+:\d+:\d+\.\d+),"        # Start  group 1
@@ -199,7 +198,7 @@ def _parse_ass_time(t: str) -> float:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
 
 
-def parse_ass_utterances(ass_text: str) -> list:
+def parse_ass_utterances(ass_text: str) -> "list[Utterance]":
     """Parse a .ass file's Dialogue lines into Utterance objects with jp text."""
     from app.transcribe import Utterance  # local import to avoid circular
     utterances = []

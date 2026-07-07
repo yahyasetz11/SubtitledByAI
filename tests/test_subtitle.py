@@ -179,3 +179,12 @@ def test_parse_ass_utterances_narration_type():
 def test_parse_ass_utterances_ids_sequential():
     utts = parse_ass_utterances(_SAMPLE_ASS)
     assert [u.id for u in utts] == [1, 2, 3]
+
+
+def test_parse_ass_utterances_newline_normalization():
+    ass = (
+        "[Events]\nFormat: Layer, Start, End, Style, Actor, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,一行目\\N二行目\n"
+    )
+    utts = parse_ass_utterances(ass)
+    assert utts[0].ja == "一行目\n二行目"
