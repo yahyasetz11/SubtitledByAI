@@ -427,6 +427,17 @@ input[type=file]:hover {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
 
+/* ── Mode visibility ────────────────────────────────────────────── */
+.mode-full, .mode-trans, .mode-tl { display: none; }
+body[data-current-mode="full"] .mode-full:not(.hidden) { display: block; }
+body[data-current-mode="full"] .field-row.mode-full:not(.hidden) { display: grid; }
+
+body[data-current-mode="transcription_only"] .mode-trans:not(.hidden) { display: block; }
+body[data-current-mode="transcription_only"] .field-row.mode-trans:not(.hidden) { display: grid; }
+
+body[data-current-mode="translation_only"] .mode-tl:not(.hidden) { display: block; }
+body[data-current-mode="translation_only"] .field-row.mode-tl:not(.hidden) { display: grid; }
+
 /* ── Textareas ──────────────────────────────────────────────────── */
 textarea {
   width: 100%; padding: 10px 14px;
@@ -501,11 +512,33 @@ textarea:focus {
     <p class="settings-note">Hanya relevan saat menggunakan Gemini — lewati jika memakai OpenAI / Anthropic.</p>
   </div>
 
+  <!-- ── Mode Switcher ── -->
+  <div class="glass" style="padding: 6px; margin-bottom: 12px;">
+    <div class="src-toggle" id="modeTabs">
+      <label class="active" data-mode="full">
+        <div style="text-align:center;">Standard<br><small style="font-weight:normal; opacity:0.8">Audio &rarr; Subtitle</small></div>
+      </label>
+      <label data-mode="transcription_only">
+        <div style="text-align:center;">Transcription Only<br><small style="font-weight:normal; opacity:0.8">Audio &rarr; Transcript</small></div>
+      </label>
+      <label data-mode="translation_only">
+        <div style="text-align:center;">Translation Only<br><small style="font-weight:normal; opacity:0.8">Transcript &rarr; Subtitle</small></div>
+      </label>
+    </div>
+  </div>
+
   <!-- ── Form card ── -->
   <div class="glass accent form-wrap">
     <form id="job-form">
 
-      <div class="field">
+      <!-- Continuity Info -->
+      <div id="continuityInfo" class="banner hidden mode-tl" style="background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.3); color: #38bdf8; display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
+          <div>Meneruskan terjemahan dari sesi: <strong id="continuityJobId"></strong></div>
+          <button type="button" onclick="clearContinuity()" style="background: transparent; border: none; color: inherit; cursor: pointer; font-size: 1.2rem;">&times;</button>
+          <input type="hidden" name="source_job_id" id="sourceJobId" value="">
+      </div>
+
+      <div class="field mode-full mode-trans mode-tl">
         <div class="src-toggle" id="src-toggle">
           <label id="lbl-file" class="active">
             <input type="radio" name="source" value="file" checked>
@@ -522,7 +555,7 @@ textarea:focus {
         </div>
       </div>
 
-      <div class="field hidden" id="url-box">
+      <div class="field hidden mode-full mode-trans" id="url-box">
         <label class="field-label" for="url">URL YouTube</label>
         <input type="text" id="url"
                placeholder="https://www.youtube.com/watch?v=...">
@@ -532,12 +565,12 @@ textarea:focus {
         </label>
       </div>
 
-      <div class="field" id="file-box">
-        <label class="field-label" for="file">File audio / video (.mp3 .m4a .wav .mp4 .mkv)</label>
-        <input type="file" id="file" accept=".mp3,.m4a,.wav,.mp4,.mkv">
+      <div class="field mode-full mode-trans mode-tl" id="file-box">
+        <label class="field-label" for="file">Pilih File (Video/Audio/JSON/.ass)</label>
+        <input type="file" id="file" accept=".mp3,.m4a,.wav,.mp4,.mkv,.json,.ass">
       </div>
 
-      <div class="field hidden" id="resume-box">
+      <div class="field hidden mode-full mode-trans mode-tl" id="resume-box">
         <label class="field-label" for="session-sel">Pilih sesi yang akan dilanjutkan</label>
         <select id="session-sel" style="width:100%"></select>
         <button type="button" class="btn-primary" id="continue-btn" style="margin-top:12px" disabled>
@@ -545,9 +578,9 @@ textarea:focus {
         </button>
       </div>
 
-      <div class="divider" id="form-divider"></div>
+      <div class="divider mode-full mode-trans mode-tl" id="form-divider"></div>
 
-      <div class="field">
+      <div class="field mode-full mode-tl">
         <label class="field-label" for="additional_context">
           Konteks Video
           <span id="ctx-required-badge" class="hidden"
@@ -562,14 +595,14 @@ textarea:focus {
         </p>
       </div>
 
-      <div class="field">
+      <div class="field mode-full mode-tl">
         <label class="field-label" for="group_select">Grup</label>
         <select id="group_select" style="margin-bottom:8px;">
           <option value="">Memuat...</option>
         </select>
       </div>
 
-      <div class="field hidden" id="show-field">
+      <div class="field hidden mode-full mode-tl" id="show-field">
         <label class="field-label" for="context_preset">Acara / Konten</label>
         <select id="context_preset" style="margin-bottom:8px;">
           <option value="">Pilih grup terlebih dahulu</option>
@@ -586,28 +619,28 @@ textarea:focus {
       </div>
 
       <div class="field-row">
-        <div class="field">
+        <div class="field mode-full mode-trans">
           <label class="field-label" for="transcribe_model">Model transkripsi</label>
           <select id="transcribe_model"></select>
         </div>
-        <div class="field">
+        <div class="field mode-full mode-tl">
+          <label class="field-label" for="translator">Model translasi</label>
+          <select id="translator"></select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field mode-full mode-tl">
+          <label class="field-label" for="translate_model">Varian model terjemahan</label>
+          <select id="translate_model"></select>
+        </div>
+        <div class="field mode-full mode-trans mode-tl">
           <label class="field-label" for="output_format">Format output</label>
           <select id="output_format">
             <option value="both">.ass + .srt</option>
             <option value="ass">.ass saja</option>
             <option value="srt">.srt saja</option>
           </select>
-        </div>
-      </div>
-
-      <div class="field-row">
-        <div class="field">
-          <label class="field-label" for="translator">Model translasi</label>
-          <select id="translator"></select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="translate_model">Varian model terjemahan</label>
-          <select id="translate_model"></select>
         </div>
       </div>
 
@@ -687,6 +720,7 @@ textarea:focus {
 <script>
 const $ = id => document.getElementById(id);
 let jobId = null, es = null;
+let currentMode = "full";
 
 const PROVIDER_LABELS = { gemini:"Gemini", openai:"OpenAI", anthropic:"Anthropic Claude" };
 
@@ -907,7 +941,12 @@ $("job-form").addEventListener("submit", async e => {
   }
 
   const fd = new FormData();
+  fd.append("mode", currentMode);
   fd.append("source", source);
+  const sourceJobId = $("sourceJobId")?.value;
+  if (sourceJobId) {
+      fd.append("source_job_id", sourceJobId);
+  }
   fd.append("translator", $("translator").value);
   fd.append("transcribe_model", $("transcribe_model").value);
   fd.append("translate_model", $("translate_model").value);
@@ -933,6 +972,7 @@ $("job-form").addEventListener("submit", async e => {
     return;
   }
   jobId = (await resp.json()).job_id;
+  if (typeof clearContinuity === "function") clearContinuity();
   resetProgress();
   logLine("job", "start", "Job " + jobId + " dimulai...");
   listen(jobId);
@@ -970,9 +1010,28 @@ document.querySelectorAll('input[name="source"]').forEach(r => {
 async function loadSessions() {
   const sel = $("session-sel");
   const btn = $("continue-btn");
+  let useBtn = $("use-transcription-btn");
+  if (!useBtn) {
+      useBtn = document.createElement("button");
+      useBtn.type = "button";
+      useBtn.className = "btn-secondary hidden";
+      useBtn.id = "use-transcription-btn";
+      useBtn.style.marginTop = "12px";
+      useBtn.style.marginLeft = "8px";
+      useBtn.innerHTML = "Teruskan Terjemahan (dari Transkripsi ini)";
+      useBtn.onclick = () => window.setupContinuity(sel.value);
+      btn.parentNode.insertBefore(useBtn, btn.nextSibling);
+      
+      sel.addEventListener('change', () => {
+          const opt = sel.options[sel.selectedIndex];
+          const isTransDone = opt && opt.dataset.status === 'done' && opt.dataset.mode === 'transcription_only';
+          useBtn.classList.toggle('hidden', !isTransDone);
+      });
+  }
+  
   sel.innerHTML = "";
   try {
-    const data = await (await fetch("/api/sessions")).json();
+    const data = await (await fetch("/api/sessions?include_done=true")).json();
     if (!data.sessions || data.sessions.length === 0) {
       const opt = document.createElement("option");
       opt.value = "";
@@ -981,18 +1040,28 @@ async function loadSessions() {
       opt.selected = true;
       sel.appendChild(opt);
       btn.disabled = true;
+      useBtn.classList.add('hidden');
       return;
     }
     for (const s of data.sessions) {
       const opt = document.createElement("option");
       opt.value = s.id;
-      opt.textContent = s.label;
+      opt.dataset.status = s.status;
+      opt.dataset.mode = s.mode;
+      
+      let labelText = s.label.replace(' · ' + s.status, '');
+      if (s.mode_label || s.mode) labelText += ` [${s.mode_label || s.mode}]`;
+      labelText += ` - ${s.status}`;
+      
+      opt.textContent = labelText;
       sel.appendChild(opt);
     }
     btn.disabled = false;
+    sel.dispatchEvent(new Event('change'));
   } catch (e) {
     sel.innerHTML = "<option disabled selected>Gagal memuat sesi</option>";
     btn.disabled = true;
+    if(useBtn) useBtn.classList.add('hidden');
   }
 }
 
@@ -1100,6 +1169,81 @@ $("gemini-key-sel").addEventListener("change", async () => {
     body: JSON.stringify({label: $("gemini-key-sel").value}),
   });
 });
+
+// ── Mode Switcher ────────────────────────────────────────────────
+document.body.setAttribute('data-current-mode', 'full');
+
+function updateOutputFormatOptions() {
+    const formatSelect = $('output_format');
+    if (!formatSelect) return;
+    const currentValue = formatSelect.value;
+    
+    formatSelect.innerHTML = '';
+    
+    if (currentMode === 'transcription_only') {
+        formatSelect.add(new Option('JSON', 'json'));
+        formatSelect.add(new Option('ASS', 'ass'));
+        formatSelect.add(new Option('Both (JSON + ASS)', 'both'));
+        
+        if (['json', 'ass', 'both'].includes(currentValue)) {
+            formatSelect.value = currentValue;
+        } else {
+            formatSelect.value = 'json';
+        }
+    } else {
+        formatSelect.add(new Option('.ass + .srt', 'both'));
+        formatSelect.add(new Option('.ass saja', 'ass'));
+        formatSelect.add(new Option('.srt saja', 'srt'));
+        
+        if (['ass', 'srt', 'both'].includes(currentValue)) {
+            formatSelect.value = currentValue;
+        } else {
+            formatSelect.value = 'both';
+        }
+    }
+}
+
+const modeLabels = document.querySelectorAll('#modeTabs label');
+modeLabels.forEach(label => {
+    label.addEventListener('click', () => {
+        modeLabels.forEach(l => l.classList.remove('active'));
+        label.classList.add('active');
+        
+        currentMode = label.dataset.mode;
+        document.body.setAttribute('data-current-mode', currentMode);
+        
+        updateOutputFormatOptions();
+        if (typeof clearContinuity === "function") clearContinuity();
+    });
+});
+updateOutputFormatOptions();
+
+window.setupContinuity = function(id) {
+    const tlLabel = document.querySelector('#modeTabs label[data-mode="translation_only"]');
+    if (tlLabel) tlLabel.click();
+    
+    $('continuityInfo').classList.remove('hidden');
+    $('continuityJobId').textContent = id;
+    $('sourceJobId').value = id;
+    
+    // Force source type to file visually
+    const rFile = document.querySelector('input[name="source"][value="file"]');
+    if (rFile) {
+        rFile.checked = true;
+        rFile.dispatchEvent(new Event('change'));
+    }
+    
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+};
+
+window.clearContinuity = function() {
+    const info = $('continuityInfo');
+    if (info) info.classList.add('hidden');
+    const cId = $('continuityJobId');
+    if (cId) cId.textContent = '';
+    const sId = $('sourceJobId');
+    if (sId) sId.value = '';
+};
 
 loadConfig();
 loadGroups();
