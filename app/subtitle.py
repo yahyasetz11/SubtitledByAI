@@ -171,3 +171,54 @@ def render_srt(events: list[SubEvent]) -> str:
         blocks.append(f"{index}\n{format_srt_time(ev.start)} --> "
                       f"{format_srt_time(ev.end)}\n{ev.text}\n")
     return "\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# .ass parser — used by Translation Only mode
+# ---------------------------------------------------------------------------
+
+import re as _re  # noqa: E402
+
+_ASS_DIALOGUE_RE = _re.compile(
+    r"^Dialogue:\s*\d+,"          # layer
+    r"(\d+:\d+:\d+\.\d+),"        # Start  group 1
+    r"(\d+:\d+:\d+\.\d+),"        # End    group 2
+    r"([^,]*),"                    # Style  group 3
+    r"[^,]*,"                      # Actor
+    r"\d+,\d+,\d+,"               # Margins
+    r"[^,]*,"                      # Effect
+    r"(.+)$",                      # Text   group 4
+    _re.IGNORECASE,
+)
+
+
+def _parse_ass_time(t: str) -> float:
+    """Convert ASS time '0:01:23.45' -> float seconds."""
+    h, m, rest = t.split(":")
+    s, cs = rest.split(".")
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
+
+
+def parse_ass_utterances(ass_text: str) -> list:
+    """Parse a .ass file's Dialogue lines into Utterance objects with jp text."""
+    from app.transcribe import Utterance  # local import to avoid circular
+    utterances = []
+    for line in ass_text.splitlines():
+        m = _ASS_DIALOGUE_RE.match(line.strip())
+        if not m:
+            continue
+        start = _parse_ass_time(m.group(1))
+        end = _parse_ass_time(m.group(2))
+        style = m.group(3).strip()
+        text = m.group(4).strip().replace('\\N', '\n').replace('\\n', '\n')
+        if not text:
+            continue
+        utype = 'narration' if style.lower() == 'narrator' else 'dialogue'
+        utterances.append(Utterance(
+            id=len(utterances) + 1,
+            start=start,
+            end=end,
+            type=utype,
+            ja=text,
+        ))
+    return utterances

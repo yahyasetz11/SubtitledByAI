@@ -135,3 +135,47 @@ def test_render_srt_format():
         "1\n00:00:01,000 --> 00:00:02,500\nHalo semua!\n\n"
         "2\n00:00:03,000 --> 00:00:04,000\nLanjut.\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# parse_ass_utterances tests
+# ---------------------------------------------------------------------------
+
+from app.subtitle import parse_ass_utterances  # noqa: E402
+
+_SAMPLE_ASS = """[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Actor, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,今日は楽しいですね
+Dialogue: 0,0:00:04.00,0:00:06.00,Narrator,,0,0,0,,ナレーション
+Dialogue: 0,0:00:07.00,0:00:09.00,Default,,0,0,0,,また来週
+"""
+
+
+def test_parse_ass_utterances_count():
+    utts = parse_ass_utterances(_SAMPLE_ASS)
+    assert len(utts) == 3
+
+
+def test_parse_ass_utterances_timing():
+    utts = parse_ass_utterances(_SAMPLE_ASS)
+    assert utts[0].start == pytest.approx(1.0)
+    assert utts[0].end == pytest.approx(3.5)
+
+
+def test_parse_ass_utterances_text():
+    utts = parse_ass_utterances(_SAMPLE_ASS)
+    assert utts[0].ja == '今日は楽しいですね'
+
+
+def test_parse_ass_utterances_narration_type():
+    utts = parse_ass_utterances(_SAMPLE_ASS)
+    assert utts[1].type == 'narration'
+    assert utts[0].type == 'dialogue'
+
+
+def test_parse_ass_utterances_ids_sequential():
+    utts = parse_ass_utterances(_SAMPLE_ASS)
+    assert [u.id for u in utts] == [1, 2, 3]
