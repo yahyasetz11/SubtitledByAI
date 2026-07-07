@@ -92,3 +92,32 @@ def test_stage_format_transcript_ass(tmp_path, monkeypatch):
     assert "result_jp.ass" in files
     assert (tmp_path / "result_jp.ass").exists()
 
+
+# ---------------------------------------------------------------------------
+# 2c — _stage_load_for_translation
+# ---------------------------------------------------------------------------
+
+def test_stage_load_for_translation_from_job_id(tmp_path, monkeypatch):
+    prior_job_dir = tmp_path / "prior_job"
+    prior_job_dir.mkdir()
+    utts_data = [{"id": 1, "start": 0.0, "end": 2.0,
+                  "type": "dialogue", "ja": "Hello"}]
+    (prior_job_dir / "transcript_jp.json").write_text(
+        json.dumps(utts_data), encoding="utf-8"
+    )
+    import app.pipeline as pipeline_mod
+    monkeypatch.setattr(pipeline_mod, "OUTPUT_DIR", tmp_path)
+
+    job = MagicMock()
+    job.dir = tmp_path / "new_job"
+    job.dir.mkdir()
+    job.id = "new_job"
+    job.status = "running"
+    job.error = None
+    job.params = {"source_job_id": "prior_job", "mode": "translation_only"}
+    job.events = []
+
+    utts = pipeline_mod._stage_load_for_translation(job)
+    assert len(utts) == 1
+    assert utts[0].ja == "Hello"
+    assert (job.dir / "transcript_jp.json").exists()

@@ -91,23 +91,44 @@ def run_job(job_id: str) -> None:
     job.status, job.error = "running", None
     _save(job)
     stage = "init"
+    mode = job.params.get("mode", "full")
     try:
-        stage = "download"
-        source = _stage_download(job, cfg)
-        stage = "normalize"
-        audio_path = _stage_normalize(job, source)
-        stage = "chunk"
-        chunks = _stage_chunk(job, audio_path)
-        stage = "transcribe"
-        utterances = _stage_transcribe(job, cfg, tracker, chunks)
-        stage = "translate"
-        rows = _stage_translate(job, cfg, tracker, utterances)
-        stage = "format"
-        files = _stage_format(job, cfg, rows)
+        if mode == "transcription_only":
+            stage = "download"
+            source = _stage_download(job, cfg)
+            stage = "normalize"
+            audio_path = _stage_normalize(job, source)
+            stage = "chunk"
+            chunks = _stage_chunk(job, audio_path)
+            stage = "transcribe"
+            utterances = _stage_transcribe(job, cfg, tracker, chunks)
+            stage = "format"
+            files = _stage_format_transcript(job, utterances)
+        elif mode == "translation_only":
+            stage = "load_transcript"
+            utterances = _stage_load_for_translation(job)
+            stage = "translate"
+            rows = _stage_translate(job, cfg, tracker, utterances)
+            stage = "format"
+            files = _stage_format(job, cfg, rows)
+        else:  # "full"
+            stage = "download"
+            source = _stage_download(job, cfg)
+            stage = "normalize"
+            audio_path = _stage_normalize(job, source)
+            stage = "chunk"
+            chunks = _stage_chunk(job, audio_path)
+            stage = "transcribe"
+            utterances = _stage_transcribe(job, cfg, tracker, chunks)
+            stage = "translate"
+            rows = _stage_translate(job, cfg, tracker, utterances)
+            stage = "format"
+            files = _stage_format(job, cfg, rows)
+
         job.status = "done"
         _emit(job, "done", "done",
               result={"usage": tracker.summary(), "files": files})
-    except Exception as exc:  # noqa: BLE001 — any stage error fails the job
+    except Exception as exc:  # noqa: BLE001
         job.status = "failed"
         job.error = str(exc)
         _emit(job, stage, "error", message=str(exc))
@@ -311,6 +332,53 @@ def _stage_format_transcript(
         files.append("source.mp4")
     _emit(job, "format", "done", ", ".join(files))
     return files
+
+
+def _stage_load_for_translation(job: "Job") -> "list[transcribe.Utterance]":
+    """Translation Only: load utterances from uploaded file or a prior job."""
+    # Checkpoint: already copied in a previous run
+    final_path = job.dir / "transcript_jp.json"
+    if final_path.exists():
+        utts = transcribe.load_transcript(final_path)
+        _emit(job, "load_transcript", "done",
+              f"{len(utts)} ujaran (checkpoint)")
+        return utts
+
+    _emit(job, "load_transcript", "start", "memuat sumber transkripsi...")
+
+    # Option A: reference a prior job by ID
+    source_job_id = job.params.get("source_job_id")
+    if source_job_id:
+        src_path = OUTPUT_DIR / source_job_id / "transcript_jp.json"
+        if not src_path.exists():
+            raise PipelineError(
+                f"transcript_jp.json tidak ditemukan di job {source_job_id}.")
+        utts = transcribe.load_transcript(src_path)
+        transcribe.save_transcript(utts, final_path)
+        _emit(job, "load_transcript", "done",
+              f"{len(utts)} ujaran dari job {source_job_id}")
+        return utts
+
+    # Option B: uploaded JSON file
+    json_src = _find_source_by_ext(job, ".json")
+    if json_src:
+        utts = _load_utterances_from_source("json", json_path=json_src)
+        transcribe.save_transcript(utts, final_path)
+        _emit(job, "load_transcript", "done",
+              f"{len(utts)} ujaran dari JSON")
+        return utts
+
+    # Option C: uploaded .ass file
+    ass_src = _find_source_by_ext(job, ".ass")
+    if ass_src:
+        utts = _load_utterances_from_source("ass", ass_path=ass_src)
+        transcribe.save_transcript(utts, final_path)
+        _emit(job, "load_transcript", "done",
+              f"{len(utts)} ujaran dari .ass")
+        return utts
+
+    raise PipelineError(
+        "Translation Only: tidak ada source_job_id, JSON, atau .ass yang tersedia.")
 
 
 def _stage_translate(job: Job, cfg, tracker,
