@@ -237,6 +237,31 @@ input[type=file]:hover {
   border-color: rgba(168,85,247,.45);
 }
 
+.btn-danger {
+  width: 100%; padding: 12px 24px; margin-top: 8px;
+  background: rgba(239,68,68,.12);
+  color: #f87171;
+  border: 1px solid rgba(239,68,68,.3);
+  border-radius: var(--r-sm);
+  font-size: .9rem; font-weight: 600; font-family: inherit;
+  cursor: pointer; letter-spacing: .02em;
+  transition: all .2s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-danger:hover {
+  background: rgba(239,68,68,.22);
+  border-color: rgba(239,68,68,.55);
+  box-shadow: 0 0 16px rgba(239,68,68,.15);
+}
+.btn-danger:active  { transform: scale(.99); }
+.btn-danger:disabled { opacity: .5; cursor: not-allowed; }
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.25); }
+  50%       { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+}
+.btn-danger.active-pulse { animation: pulse-red 2s ease-in-out infinite; }
+
 /* ── Pipeline bar ───────────────────────────────────────────────── */
 .pipeline {
   display: flex; align-items: center;
@@ -648,6 +673,11 @@ textarea:focus {
         Mulai Proses
       </button>
 
+      <button type="button" class="btn-danger hidden" id="cancel-btn">
+        <span style="font-size:1rem; line-height:1;">&#x2715;</span>
+        Batalkan Proses
+      </button>
+
     </form>
   </div>
 
@@ -697,7 +727,7 @@ textarea:focus {
 
         <div class="retry-row">
           <button class="btn-secondary hidden" id="retry-btn" type="button">
-            ↩ Coba Lagi (lanjut dari checkpoint)
+            &#x21a9; Coba Lagi (lanjut dari checkpoint)
           </button>
         </div>
       </div><!-- /progress-left -->
@@ -880,6 +910,12 @@ function resetProgress() {
   $("downloads").innerHTML = "";
   $("dl-card").classList.add("hidden");
   $("retry-btn").classList.add("hidden");
+  // Show & arm the cancel button
+  const cb = $("cancel-btn");
+  cb.classList.remove("hidden");
+  cb.classList.add("active-pulse");
+  cb.disabled = false;
+  cb.innerHTML = '<span style="font-size:1rem;line-height:1;">&#x2715;</span> Batalkan Proses';
   $("stage-chip").classList.add("hidden");
   STAGES.forEach((s, i) => {
     setPipeStage(s, "");
@@ -907,6 +943,12 @@ function finishJob(result) {
 }
 
 // ── SSE ──────────────────────────────────────────────────────────
+function hideCancelBtn() {
+  const cb = $("cancel-btn");
+  cb.classList.add("hidden");
+  cb.classList.remove("active-pulse");
+}
+
 function listen(id) {
   if (es) es.close();
   es = new EventSource("/api/jobs/" + id + "/events");
@@ -915,15 +957,46 @@ function listen(id) {
     updatePipeline(ev.stage, ev.status);
     if (ev.status === "error") {
       logLine(ev.stage, "error", "GAGAL: " + (ev.message || ""));
+      hideCancelBtn();
       $("retry-btn").classList.remove("hidden");
       return;
     }
+    if (ev.status === "cancelled") {
+      logLine(ev.stage, "cancelled", "Proses dibatalkan.");
+      hideCancelBtn();
+      return;
+    }
     logLine(ev.stage, ev.status, ev.message || ev.status);
-    if (ev.stage === "done" && ev.result) finishJob(ev.result);
+    if (ev.stage === "done" && ev.result) {
+      hideCancelBtn();
+      finishJob(ev.result);
+    }
   };
-  es.addEventListener("end", () => es.close());
+  es.addEventListener("end", () => { es.close(); hideCancelBtn(); });
   es.onerror = () => {};
 }
+
+// ── Cancel ───────────────────────────────────────────────────────
+$("cancel-btn").addEventListener("click", async () => {
+  if (!jobId) return;
+  const btn = $("cancel-btn");
+  btn.disabled = true;
+  btn.textContent = "Membatalkan...";
+  try {
+    const resp = await fetch("/api/jobs/" + jobId + "/cancel", { method: "POST" });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(err.detail || "Gagal membatalkan job.");
+      btn.disabled = false;
+      btn.textContent = "✕ Batalkan Proses";
+    }
+    // Button will be hidden when the SSE stream receives the "cancelled" event
+  } catch (err) {
+    alert("Gagal menghubungi server.");
+    btn.disabled = false;
+    btn.textContent = "✕ Batalkan Proses";
+  }
+});
 
 // ── Submit ───────────────────────────────────────────────────────
 $("job-form").addEventListener("submit", async e => {
@@ -958,10 +1031,11 @@ $("job-form").addEventListener("submit", async e => {
   if (source === "url") {
     fd.append("url", $("url").value.trim());
     fd.append("save_mp4", $("save_mp4").checked);
-  } else {
+  } else if (source === "file") {
     if (!$("file").files[0]) { alert("Pilih file dulu."); return; }
     fd.append("file", $("file").files[0]);
   }
+  // source === "resume" with source_job_id: no file needed, backend handles it
   const btn = $("start-btn");
   btn.disabled = true; btn.textContent = "Memproses...";
   const resp = await fetch("/api/jobs", { method:"POST", body:fd });
@@ -1226,12 +1300,19 @@ window.setupContinuity = function(id) {
     $('continuityJobId').textContent = id;
     $('sourceJobId').value = id;
     
-    // Force source type to file visually
-    const rFile = document.querySelector('input[name="source"][value="file"]');
-    if (rFile) {
-        rFile.checked = true;
-        rFile.dispatchEvent(new Event('change'));
+    // Keep source on "resume" so the file box stays hidden and no file is required.
+    // Then re-show start-btn & divider (hidden by the resume radio handler) so the
+    // user can submit the continuity job without selecting from the session picker.
+    const rResume = document.querySelector('input[name="source"][value="resume"]');
+    if (rResume && !rResume.checked) {
+        rResume.checked = true;
+        rResume.dispatchEvent(new Event('change'));
     }
+    // Re-show submit button — continuity doesn't use the session picker, it goes straight to submit
+    $('start-btn').classList.remove('hidden');
+    $('form-divider').classList.remove('hidden');
+    // Hide the session picker (resume-box) since we already have the job ID
+    $('resume-box').classList.add('hidden');
     
     window.scrollTo({ top: 0, behavior: 'smooth' });
 };

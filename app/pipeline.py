@@ -27,14 +27,19 @@ class PipelineError(Exception):
     """Job cannot proceed (bad params, missing source file, ...)."""
 
 
+class JobCancelledError(Exception):
+    """Raised when a job is cancelled mid-run."""
+
+
 @dataclass
 class Job:
     id: str
     dir: Path
     params: dict
-    status: str = "queued"  # queued | running | done | failed
+    status: str = "queued"  # queued | running | done | failed | cancelled
     error: str | None = None
     events: list[dict] = field(default_factory=list)
+    cancelled: bool = False
 
 
 def create_job(params: dict, upload_bytes: bytes | None = None,
@@ -62,6 +67,21 @@ def load_job(job_id: str) -> Job | None:
               events=meta.get("events", []))
     JOBS[job.id] = job
     return job
+
+
+def cancel_job(job_id: str) -> bool:
+    """Signal a running job to stop. Returns True if the job was found."""
+    job = JOBS.get(job_id) or load_job(job_id)
+    if job is None:
+        return False
+    job.cancelled = True
+    return True
+
+
+def _check_cancelled(job: Job) -> None:
+    """Raise JobCancelledError if the cancel flag has been set."""
+    if job.cancelled:
+        raise JobCancelledError("Job dibatalkan oleh pengguna.")
 
 
 def _save(job: Job) -> None:
@@ -96,38 +116,53 @@ def run_job(job_id: str) -> None:
         if mode == "transcription_only":
             stage = "download"
             source = _stage_download(job, cfg)
+            _check_cancelled(job)
             stage = "normalize"
             audio_path = _stage_normalize(job, source)
+            _check_cancelled(job)
             stage = "chunk"
             chunks = _stage_chunk(job, audio_path)
+            _check_cancelled(job)
             stage = "transcribe"
             utterances = _stage_transcribe(job, cfg, tracker, chunks)
+            _check_cancelled(job)
             stage = "format"
             files = _stage_format_transcript(job, utterances)
         elif mode == "translation_only":
             stage = "load_transcript"
             utterances = _stage_load_for_translation(job)
+            _check_cancelled(job)
             stage = "translate"
             rows = _stage_translate(job, cfg, tracker, utterances)
+            _check_cancelled(job)
             stage = "format"
             files = _stage_format(job, cfg, rows)
         else:  # "full"
             stage = "download"
             source = _stage_download(job, cfg)
+            _check_cancelled(job)
             stage = "normalize"
             audio_path = _stage_normalize(job, source)
+            _check_cancelled(job)
             stage = "chunk"
             chunks = _stage_chunk(job, audio_path)
+            _check_cancelled(job)
             stage = "transcribe"
             utterances = _stage_transcribe(job, cfg, tracker, chunks)
+            _check_cancelled(job)
             stage = "translate"
             rows = _stage_translate(job, cfg, tracker, utterances)
+            _check_cancelled(job)
             stage = "format"
             files = _stage_format(job, cfg, rows)
 
         job.status = "done"
         _emit(job, "done", "done",
               result={"usage": tracker.summary(), "files": files})
+    except JobCancelledError:
+        job.status = "cancelled"
+        job.error = "Dibatalkan oleh pengguna."
+        _emit(job, stage, "cancelled", message="Job dibatalkan oleh pengguna.")
     except Exception as exc:  # noqa: BLE001
         job.status = "failed"
         job.error = str(exc)

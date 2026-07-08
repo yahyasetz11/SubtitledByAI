@@ -276,7 +276,7 @@ async def job_events(job_id: str) -> StreamingResponse:
                 payload = json.dumps(job.events[idx], ensure_ascii=False)
                 yield f"data: {payload}\n\n"
                 idx += 1
-            if job.status in ("done", "failed"):
+            if job.status in ("done", "failed", "cancelled"):
                 end = json.dumps({"status": job.status, "error": job.error})
                 yield f"event: end\ndata: {end}\n\n"
                 return
@@ -306,3 +306,14 @@ def retry(job_id: str, background_tasks: BackgroundTasks) -> dict:
     job.events.clear()
     background_tasks.add_task(pipeline.run_job, job.id)
     return {"job_id": job.id, "status": "queued"}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel(job_id: str) -> dict:
+    job = _get_job_or_404(job_id)
+    if job.status not in ("running", "queued"):
+        raise HTTPException(409, f"Job tidak bisa dibatalkan (status: {job.status}).")
+    found = pipeline.cancel_job(job_id)
+    if not found:
+        raise HTTPException(404, f"Job {job_id} tidak ditemukan.")
+    return {"job_id": job_id, "status": "cancelling"}
