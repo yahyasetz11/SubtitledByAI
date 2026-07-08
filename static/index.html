@@ -445,6 +445,113 @@ input[type=file]:hover {
 /* ── Retry row ──────────────────────────────────────────────────── */
 .retry-row { text-align: center; padding-top: 4px; }
 
+/* ── Subtitle Preview Player ─────────────────────────────────────── */
+.preview-card {
+  padding: 18px 18px 14px;
+  margin-bottom: 14px;
+  animation: fade-in-up .4s ease both;
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.preview-label {
+  font-size: .72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: var(--muted2); margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+
+.preview-label::before {
+  content: '';
+  display: inline-block; width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--grad);
+  animation: preview-dot-pulse 2s ease-in-out infinite;
+}
+
+@keyframes preview-dot-pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(168,85,247,.5); }
+  50%      { box-shadow: 0 0 0 5px rgba(168,85,247,0); }
+}
+
+.preview-player-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.07);
+}
+
+.preview-player-wrap video,
+.preview-player-wrap audio {
+  position: absolute;
+  inset: 0; width: 100%; height: 100%;
+  display: block;
+}
+
+/* Octopus canvas overlay sits on top of the video */
+.preview-player-wrap .libassjs-canvas-parent {
+  position: absolute !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.preview-player-wrap .libassjs-canvas-parent canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Audio-only: show a pulsing waveform placeholder above controls */
+.preview-audio-bg {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: #000;
+  pointer-events: none;
+}
+
+.preview-audio-waves {
+  display: flex; gap: 5px; align-items: center; height: 40px;
+}
+
+.preview-audio-waves span {
+  display: block; width: 4px; border-radius: 2px;
+  background: linear-gradient(180deg, #a855f7, #f472b6);
+  animation: wave-bar 1.2s ease-in-out infinite;
+  opacity: 0.5;
+}
+
+.preview-audio-waves span:nth-child(1) { height: 18px; animation-delay: 0s; }
+.preview-audio-waves span:nth-child(2) { height: 30px; animation-delay: .1s; }
+.preview-audio-waves span:nth-child(3) { height: 40px; animation-delay: .2s; }
+.preview-audio-waves span:nth-child(4) { height: 28px; animation-delay: .3s; }
+.preview-audio-waves span:nth-child(5) { height: 16px; animation-delay: .4s; }
+.preview-audio-waves span:nth-child(6) { height: 36px; animation-delay: .15s; }
+.preview-audio-waves span:nth-child(7) { height: 22px; animation-delay: .25s; }
+.preview-audio-waves span:nth-child(8) { height: 12px; animation-delay: .35s; }
+
+@keyframes wave-bar {
+  0%,100% { transform: scaleY(1); opacity: 0.5; }
+  50%      { transform: scaleY(1.5); opacity: 0.9; }
+}
+
+/* Pause the animation when audio is paused */
+.preview-player-wrap.paused .preview-audio-waves span { animation-play-state: paused; }
+
+.preview-note {
+  margin-top: 9px;
+  font-size: .72rem;
+  color: var(--muted);
+  text-align: center;
+}
+
 /* ── Utility ─────────────────────────────────────────────────────  */
 .hidden { display: none !important; }
 
@@ -516,6 +623,7 @@ textarea:focus {
   .progress-cols { grid-template-columns: 1fr; }
 }
 </style>
+<script src="/static/libass/subtitles-octopus.js"></script>
 </head>
 <body>
 <div class="app">
@@ -725,6 +833,15 @@ textarea:focus {
           <p class="dl-usage" id="usage"></p>
         </div>
 
+        <!-- Subtitle Preview Player -->
+        <div class="glass preview-card hidden" id="preview-card">
+          <div class="preview-label">Preview Subtitle</div>
+          <div class="preview-player-wrap" id="preview-player-wrap">
+            <!-- populated by JS -->
+          </div>
+          <p class="preview-note" id="preview-note"></p>
+        </div>
+
         <div class="retry-row">
           <button class="btn-secondary hidden" id="retry-btn" type="button">
             &#x21a9; Coba Lagi (lanjut dari checkpoint)
@@ -909,6 +1026,14 @@ function resetProgress() {
   $("usage").textContent = "";
   $("downloads").innerHTML = "";
   $("dl-card").classList.add("hidden");
+  // Reset preview player
+  if (octopusInstance) {
+    try { octopusInstance.dispose(); } catch(_) {}
+    octopusInstance = null;
+  }
+  $("preview-card").classList.add("hidden");
+  $("preview-player-wrap").innerHTML = "";
+  $("preview-note").textContent = "";
   $("retry-btn").classList.add("hidden");
   // Show & arm the cancel button
   const cb = $("cancel-btn");
@@ -926,7 +1051,7 @@ function resetProgress() {
 
 function finishJob(result) {
   STAGES.forEach((s, i) => {
-    if (!$("pipe-" + s).classList.contains("error")) setPipeStage(s, "done");
+    if (!("pipe-" + s) || !$("pipe-" + s).classList.contains("error")) setPipeStage(s, "done");
     const c = $("conn-" + i);
     if (c) c.className = "pipe-conn done";
   });
@@ -940,6 +1065,157 @@ function finishJob(result) {
     $("downloads").appendChild(a);
   }
   $("dl-card").classList.remove("hidden");
+  buildPreview(result.files);
+}
+
+// ── Subtitle Preview ─────────────────────────────────────────────
+let octopusInstance = null;
+
+function buildPreview(files) {
+  // Pick the .ass file (result.ass preferred, then result_jp.ass)
+  const assFile = files.includes("result.ass")
+    ? "result.ass"
+    : files.includes("result_jp.ass")
+      ? "result_jp.ass"
+      : null;
+  if (!assFile) return; // no subtitle to preview
+
+  // Detect video vs audio-only mode
+  const hasVideo = files.includes("source.mp4");
+
+  const wrap = $("preview-player-wrap");
+  wrap.innerHTML = ""; // reset
+
+  const base = "/api/jobs/" + jobId + "/stream/";
+  const assUrl = base + assFile;
+
+  if (hasVideo) {
+    // ── Video mode ──────────────────────────────────────────────
+    const vid = document.createElement("video");
+    vid.controls = true;
+    vid.preload = "metadata";
+    vid.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    const src = document.createElement("source");
+    src.src = base + "source.mp4";
+    src.type = "video/mp4";
+    vid.appendChild(src);
+    wrap.appendChild(vid);
+    $("preview-note").textContent = "Video + subtitle " + assFile + " (full .ass style via libass)";
+    initOctopus(vid, assUrl, wrap);
+  } else {
+    // ── Audio-only mode — black canvas + waveform decoration ────
+    const bg = document.createElement("div");
+    bg.className = "preview-audio-bg";
+    bg.innerHTML = `<div class="preview-audio-waves">
+      <span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span><span></span>
+    </div>`;
+    wrap.appendChild(bg);
+
+    // Hidden <audio> element drives SubtitleOctopus timing
+    const aud = document.createElement("audio");
+    aud.controls = true;
+    aud.preload = "metadata";
+    aud.style.cssText = "position:absolute;bottom:0;left:0;width:100%;z-index:2;";
+    const src = document.createElement("source");
+    src.src = base + "audio.mp3";
+    src.type = "audio/mpeg";
+    aud.appendChild(src);
+    wrap.appendChild(aud);
+
+    // Pause/play animation on waveform
+    aud.addEventListener("play",  () => wrap.classList.remove("paused"));
+    aud.addEventListener("pause", () => wrap.classList.add("paused"));
+    wrap.classList.add("paused");
+
+    $("preview-note").textContent = "Audio-only mode — subtitle " + assFile + " ditampilkan di atas latar hitam";
+    initOctopus(aud, assUrl, wrap);
+  }
+
+  $("preview-card").classList.remove("hidden");
+}
+
+function initOctopus(mediaEl, assUrl, containerEl) {
+  if (octopusInstance) {
+    try { octopusInstance.dispose(); } catch(_) {}
+    octopusInstance = null;
+  }
+  const LOCAL = "/static/libass/";
+  const isAudio = mediaEl.tagName === "AUDIO";
+
+  function fixCanvasParent() {
+    const cp = containerEl.querySelector(".libassjs-canvas-parent");
+    if (cp) {
+      cp.style.cssText =
+        "position:absolute!important;top:0!important;left:0!important;" +
+        "width:100%!important;height:100%!important;" +
+        "pointer-events:none!important;z-index:5!important;overflow:hidden;";
+    }
+  }
+
+  function doInit(assText) {
+    if (isAudio) {
+      // SubtitlesOctopus expects a <video> element because it reads videoWidth and videoHeight
+      // to calculate subtitle layout. An <audio> element doesn't have these properties.
+      // We can just mock them on the <audio> element! This way, the library attaches its
+      // timeupdate and playing events to the REAL audio track and stays perfectly in sync.
+      Object.defineProperty(mediaEl, 'videoWidth', { get: () => containerEl.clientWidth || 1280 });
+      Object.defineProperty(mediaEl, 'videoHeight', { get: () => containerEl.clientHeight || 720 });
+    }
+
+    octopusInstance = new SubtitlesOctopus({
+      video: mediaEl,
+      subContent: assText,
+      workerUrl: LOCAL + "subtitles-octopus-worker.js",
+      legacyWorkerUrl: LOCAL + "subtitles-octopus-worker-legacy.js",
+      onReady: () => {
+        fixCanvasParent();
+        octopusInstance.resizeWithTimeout();
+      },
+    });
+    const ro = new ResizeObserver(() => {
+      if (!octopusInstance) return;
+      fixCanvasParent();
+      octopusInstance.resizeWithTimeout();
+    });
+    ro.observe(containerEl);
+  }
+
+  fetch(assUrl)
+    .then(r => r.text())
+    .then(assText => {
+      // Offset subtitles upwards so they don't overlap with HTML5 media controls.
+      // We read PlayResY to calculate a proportional shift (~8% of screen height).
+      let playResY = 720;
+      const match = assText.match(/^PlayResY:\s*(\d+)/m);
+      if (match) playResY = parseInt(match[1], 10) || 720;
+      const shift = Math.round(playResY * 0.08);
+
+      assText = assText.split('\n').map(line => {
+        if (line.startsWith('Style: ')) {
+          const parts = line.split(',');
+          // ASS Style format: Name,Fontname,Fontsize,...,Alignment,MarginL,MarginR,MarginV,Encoding
+          // MarginV is index 21
+          if (parts.length >= 22) {
+            let marginV = parseInt(parts[21], 10);
+            if (!isNaN(marginV)) {
+              parts[21] = (marginV + shift).toString();
+            }
+          }
+          return parts.join(',');
+        }
+        return line;
+      }).join('\n');
+
+      if (isAudio || mediaEl.readyState >= 1) {
+        doInit(assText);
+      } else {
+        mediaEl.addEventListener("loadedmetadata", () => doInit(assText), { once: true });
+      }
+    })
+    .catch(err => {
+      $("preview-note").textContent = "Gagal memuat subtitle untuk preview: " + err.message;
+    });
 }
 
 // ── SSE ──────────────────────────────────────────────────────────

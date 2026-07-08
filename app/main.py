@@ -8,10 +8,12 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import audio, pipeline, providers
 
 app = FastAPI(title="SubtitledByAI")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 GROUPS: dict[str, dict] = {
     "sakurazaka": {
@@ -46,6 +48,8 @@ CONTEXT_DIR = Path("context")
 DOWNLOADABLE = {"result.ass", "result.srt", "transcript_jp.json",
                 "translated_id.json", "flags.json", "usage.json",
                 "source.mp4", "result_jp.ass"}
+# Files allowed to be streamed inline (for in-browser preview player)
+STREAMABLE = {"source.mp4", "audio.mp3", "result.ass", "result_jp.ass"}
 VALID_FORMATS = {"ass", "srt", "both"}
 
 
@@ -294,6 +298,18 @@ def download(job_id: str, filename: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(404, f"{filename} belum ada.")
     return FileResponse(path, filename=f"{job.id}_{filename}")
+
+
+@app.get("/api/jobs/{job_id}/stream/{filename}")
+def stream_media(job_id: str, filename: str) -> FileResponse:
+    """Serve a job file inline (no attachment header) for browser media playback."""
+    job = _get_job_or_404(job_id)
+    if filename not in STREAMABLE:
+        raise HTTPException(404, "File tidak tersedia untuk di-stream.")
+    path = job.dir / filename
+    if not path.exists():
+        raise HTTPException(404, f"{filename} belum ada.")
+    return FileResponse(path, headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
 @app.post("/api/jobs/{job_id}/retry")
