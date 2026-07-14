@@ -121,7 +121,7 @@ def run_job(job_id: str) -> None:
             audio_path = _stage_normalize(job, source)
             _check_cancelled(job)
             stage = "chunk"
-            chunks = _stage_chunk(job, audio_path)
+            chunks = _stage_chunk(job, audio_path, cfg)
             _check_cancelled(job)
             stage = "transcribe"
             utterances = _stage_transcribe(job, cfg, tracker, chunks)
@@ -145,7 +145,7 @@ def run_job(job_id: str) -> None:
             audio_path = _stage_normalize(job, source)
             _check_cancelled(job)
             stage = "chunk"
-            chunks = _stage_chunk(job, audio_path)
+            chunks = _stage_chunk(job, audio_path, cfg)
             _check_cancelled(job)
             stage = "transcribe"
             utterances = _stage_transcribe(job, cfg, tracker, chunks)
@@ -242,7 +242,7 @@ def _stage_normalize(job: Job, source: Path) -> Path:
     return dst
 
 
-def _stage_chunk(job: Job, audio_path: Path) -> list[audio.PlannedChunk]:
+def _stage_chunk(job: Job, audio_path: Path, cfg) -> list[audio.PlannedChunk]:
     offsets_path = job.dir / "offsets.json"
     chunks_dir = job.dir / "chunks"
     chunks_dir.mkdir(exist_ok=True)
@@ -261,7 +261,11 @@ def _stage_chunk(job: Job, audio_path: Path) -> list[audio.PlannedChunk]:
                     audio_path, threshold_db)
             return silence_cache[threshold_db]
 
-        chunks = audio.plan_chunks(duration, get_silences)
+        chunks = audio.plan_chunks(
+            duration, get_silences,
+            min_seconds=cfg.chunk_min_seconds,
+            max_seconds=cfg.chunk_max_seconds,
+        )
         audio.write_offsets(chunks, offsets_path)
         _emit(job, "chunk", "done", f"{len(chunks)} chunk")
     for c in chunks:

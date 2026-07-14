@@ -9,9 +9,9 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-# §5: target chunk 10-14 minutes, cut mid-silence; else hard cut + overlap.
-TARGET_MIN_SECONDS = 600.0
-TARGET_MAX_SECONDS = 840.0
+# §5: target chunk size (configurable via CHUNK_MIN_MINUTES / CHUNK_MAX_MINUTES).
+DEFAULT_CHUNK_MIN_SECONDS = 240.0   # 4 minutes
+DEFAULT_CHUNK_MAX_SECONDS = 360.0   # 6 minutes
 OVERLAP_SECONDS = 4.0
 MIN_SILENCE_DURATION = 0.5
 THRESHOLD_CASCADE_DB = (-30, -25, -20)
@@ -59,9 +59,10 @@ def parse_silences(stderr: str) -> list[Silence]:
     return silences
 
 
-def _find_cut(start: float, get_silences) -> float | None:
-    window_lo = start + TARGET_MIN_SECONDS
-    window_hi = start + TARGET_MAX_SECONDS
+def _find_cut(start: float, get_silences,
+              min_seconds: float, max_seconds: float) -> float | None:
+    window_lo = start + min_seconds
+    window_hi = start + max_seconds
     for threshold in THRESHOLD_CASCADE_DB:
         candidates = [
             s for s in get_silences(threshold)
@@ -75,22 +76,31 @@ def _find_cut(start: float, get_silences) -> float | None:
     return None
 
 
-def plan_chunks(duration: float, get_silences) -> list[PlannedChunk]:
-    """get_silences(threshold_db) -> list[Silence]; called lazily per threshold."""
+def plan_chunks(
+    duration: float,
+    get_silences,
+    min_seconds: float = DEFAULT_CHUNK_MIN_SECONDS,
+    max_seconds: float = DEFAULT_CHUNK_MAX_SECONDS,
+) -> list[PlannedChunk]:
+    """get_silences(threshold_db) -> list[Silence]; called lazily per threshold.
+
+    min_seconds / max_seconds define the silence-search window for each chunk.
+    Configurable via CHUNK_MIN_MINUTES / CHUNK_MAX_MINUTES in .env.
+    """
     chunks: list[PlannedChunk] = []
     start = 0.0
     index = 1
     overlap_prev = False
     while True:
-        if duration - start <= TARGET_MAX_SECONDS:
+        if duration - start <= max_seconds:
             chunks.append(PlannedChunk(index, start, duration, overlap_prev))
             return chunks
-        cut = _find_cut(start, get_silences)
+        cut = _find_cut(start, get_silences, min_seconds, max_seconds)
         if cut is not None:
             chunks.append(PlannedChunk(index, start, cut, overlap_prev))
             start, overlap_prev = cut, False
         else:
-            hard_cut = start + TARGET_MAX_SECONDS
+            hard_cut = start + max_seconds
             chunks.append(PlannedChunk(index, start, hard_cut, overlap_prev))
             start, overlap_prev = hard_cut - OVERLAP_SECONDS, True
         index += 1

@@ -77,6 +77,8 @@ class Config:
     sub_max_duration: float
     sub_merge_gap: float
     sub_cps_flag: float
+    chunk_min_seconds: float
+    chunk_max_seconds: float
 
     @classmethod
     def load(cls) -> "Config":
@@ -103,6 +105,8 @@ class Config:
             sub_max_duration=float(os.getenv("SUB_MAX_DURATION", "7.5")),
             sub_merge_gap=float(os.getenv("SUB_MERGE_GAP", "0.5")),
             sub_cps_flag=float(os.getenv("SUB_CPS_FLAG", "25")),
+            chunk_min_seconds=float(os.getenv("CHUNK_MIN_MINUTES", "4")) * 60,
+            chunk_max_seconds=float(os.getenv("CHUNK_MAX_MINUTES", "6")) * 60,
         )
 
     def available_providers(self) -> dict[str, bool]:

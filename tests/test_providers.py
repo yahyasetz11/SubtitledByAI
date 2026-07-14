@@ -25,6 +25,8 @@ def test_config_loads_keys_and_defaults(monkeypatch):
     assert cfg.sub_max_duration == pytest.approx(7.5)
     assert cfg.sub_merge_gap == pytest.approx(0.5)
     assert cfg.sub_cps_flag == pytest.approx(25.0)
+    assert cfg.chunk_min_seconds == pytest.approx(4 * 60)   # 240 s
+    assert cfg.chunk_max_seconds == pytest.approx(6 * 60)   # 360 s
 
 
 def test_config_env_overrides(monkeypatch):
@@ -38,6 +40,17 @@ def test_config_env_overrides(monkeypatch):
     assert cfg.transcribe_model == "gemini-3.0-pro"
     assert cfg.sub_cps_flag == pytest.approx(30.0)
     assert cfg.available_providers()["openai"] is True
+
+
+def test_config_chunk_minutes_converted_to_seconds(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("CHUNK_MIN_MINUTES", "10")
+    monkeypatch.setenv("CHUNK_MAX_MINUTES", "14")
+
+    cfg = Config.load()
+
+    assert cfg.chunk_min_seconds == pytest.approx(600.0)
+    assert cfg.chunk_max_seconds == pytest.approx(840.0)
 
 
 def test_config_ignores_comment_as_cookies_value(monkeypatch):
@@ -347,6 +360,8 @@ def _fake_cfg():
         sub_max_duration=7.5,
         sub_merge_gap=0.5,
         sub_cps_flag=25,
+        chunk_min_seconds=240.0,
+        chunk_max_seconds=360.0,
     )
 
 

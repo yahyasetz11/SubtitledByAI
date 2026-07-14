@@ -8,6 +8,7 @@ venv/
 
 # Claude working artifacts
 cookie.txt
+bilibili_cookies.txt
 code_review_details.txt
 encoding_check.json
 non_ascii_contexts.txt
