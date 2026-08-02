@@ -22,6 +22,7 @@ GROUPS: dict[str, dict] = {
             {"id": "sakurazaka_sokomagattara", "label": "Sokomagattara Sakurazaka"},
             {"id": "sakurazaka_chokosaku", "label": "Choko-Saku"},
             {"id": "sakurazaka_channel", "label": "Sakurazaka Channel"},
+            {"id": "sakurazaka_sakura_meets", "label": "Sakura Meets"},
         ],
     },
     "nogizaka": {

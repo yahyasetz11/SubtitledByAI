@@ -166,6 +166,7 @@ def call_with_retries(fn, *, attempts: int = 4, base_delay: float = 2.0,
 PRICING = {
     # Gemini 3.x (preview/lite — use 2.5-flash pricing as estimate until official pricing published)
     "gemini-3.1-pro-preview": (3.50, 10.50),
+    "gemini-3.6-flash": (1.50, 7.50),
     "gemini-3.5-flash": (0.30, 2.50),
     "gemini-3-flash-preview": (0.30, 2.50),
     "gemini-3.1-flash-lite": (0.10, 0.40),
