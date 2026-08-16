@@ -26,6 +26,8 @@
   --c-chunk:     #fbbf24;
   --c-transcribe:#a855f7;
   --c-translate: #f472b6;
+  --c-timing:    #fb923c;
+  --c-qc:        #818cf8;
   --c-format:    #7bd88f;
   --c-done:      #7bd88f;
   --c-error:     #ff6b6b;
@@ -399,6 +401,8 @@ input[type=file]:hover {
 .bd-chunk     { background:rgba(251,191,36,.12);  color:var(--c-chunk);     }
 .bd-transcribe{ background:rgba(168,85,247,.12);  color:var(--c-transcribe);}
 .bd-translate { background:rgba(244,114,182,.12); color:var(--c-translate); }
+.bd-timing    { background:rgba(251,146,60,.12);  color:var(--c-timing);    }
+.bd-qc        { background:rgba(129,140,248,.12); color:var(--c-qc);        }
 .bd-format    { background:rgba(123,216,143,.12); color:var(--c-format);    }
 .bd-done      { background:rgba(123,216,143,.12); color:var(--c-done);      }
 .bd-error     { background:rgba(255,107,107,.12); color:var(--c-error);     }
@@ -821,6 +825,16 @@ textarea:focus {
             <div class="pipe-lbl">Translasi</div>
           </div>
           <div class="pipe-conn" id="conn-4"></div>
+          <div class="pipe-stage" id="pipe-timing">
+            <div class="pipe-dot">Ti</div>
+            <div class="pipe-lbl">Timing</div>
+          </div>
+          <div class="pipe-conn" id="conn-5"></div>
+          <div class="pipe-stage" id="pipe-qc">
+            <div class="pipe-dot">Q</div>
+            <div class="pipe-lbl">QC</div>
+          </div>
+          <div class="pipe-conn" id="conn-6"></div>
           <div class="pipe-stage" id="pipe-format">
             <div class="pipe-dot">F</div>
             <div class="pipe-lbl">Format</div>
@@ -885,8 +899,8 @@ function populateTranslateModelDropdown(modelsConfig, provider) {
   }
 }
 
-const STAGES = ["download","normalize","chunk","transcribe","translate","format"];
-const PIPE_ICONS = { download:"D", normalize:"N", chunk:"C", transcribe:"T", translate:"L", format:"F" };
+const STAGES = ["download","normalize","chunk","transcribe","translate","timing","qc","format"];
+const PIPE_ICONS = { download:"D", normalize:"N", chunk:"C", transcribe:"T", translate:"L", timing:"Ti", qc:"Q", format:"F" };
 
 // ── Config ──────────────────────────────────────────────────────
 function showBanner(msg) {

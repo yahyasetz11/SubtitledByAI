@@ -30,7 +30,7 @@ pytest -v
 
 ### Pipeline stages (sequential, each checkpointed)
 
-`download → normalize → chunk → transcribe → translate → format`
+`download → normalize → chunk → transcribe → translate → timing → qc → format`
 
 Each stage checks for its output artifact before running. If found, it emits `"done (checkpoint)"` and skips. This makes retry free — only the failed stage re-runs. Transcription checkpoints per-chunk (`chunks/transcript_NNN.json`); translation checkpoints per-batch (`chunks/translated_NNN.json`).
 
@@ -44,6 +44,8 @@ Each stage checks for its output artifact before running. If found, it emits `"d
 | `app/audio.py` | yt-dlp download with `--remote-components ejs:github`, ffmpeg normalize, silence-based chunking |
 | `app/transcribe.py` | Gemini transcription, recursive chunk splitting on truncation, overlap deduplication |
 | `app/translate.py` | 3-tier retry (batch → retry with error_feedback → per-line fallback), `BATCH_SIZE=100` |
+| `app/timing.py` | Per-chunk silence detection re-anchoring; falls back to original timestamps on count mismatch |
+| `app/qc.py` | Sliding-window Gemini QC: slices audio per batch, checks timing + translation, auto-fixes |
 | `app/subtitle.py` | 5-step postprocess: merge_short → extend_short → split_long → fix_overlaps → cps_flags; ASS/SRT render |
 
 ### Key design patterns

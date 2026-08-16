@@ -362,6 +362,10 @@ def _fake_cfg():
         sub_cps_flag=25,
         chunk_min_seconds=240.0,
         chunk_max_seconds=360.0,
+        timing_model="gemini-2.5-flash",
+        qc_window_size=10,
+        qc_batch_size=20,
+        qc_model="gemini-2.5-flash",
     )
 
 

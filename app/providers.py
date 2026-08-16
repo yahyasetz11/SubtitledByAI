@@ -79,6 +79,10 @@ class Config:
     sub_cps_flag: float
     chunk_min_seconds: float
     chunk_max_seconds: float
+    timing_model: str
+    qc_window_size: int
+    qc_batch_size: int
+    qc_model: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -107,6 +111,10 @@ class Config:
             sub_cps_flag=float(os.getenv("SUB_CPS_FLAG", "25")),
             chunk_min_seconds=float(os.getenv("CHUNK_MIN_MINUTES", "4")) * 60,
             chunk_max_seconds=float(os.getenv("CHUNK_MAX_MINUTES", "6")) * 60,
+            timing_model=os.getenv("TIMING_MODEL", "gemini-2.5-flash"),
+            qc_window_size=int(os.getenv("QC_WINDOW_SIZE", "10")),
+            qc_batch_size=int(os.getenv("QC_BATCH_SIZE", "20")),
+            qc_model=os.getenv("QC_MODEL", "gemini-2.5-flash"),
         )
 
     def available_providers(self) -> dict[str, bool]:

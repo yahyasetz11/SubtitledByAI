@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from app import audio, providers, subtitle, transcribe, translate
+from app import audio, providers, qc, subtitle, timing, transcribe, translate
 from app.providers import UsageTracker
 from app.subtitle import SubEvent
 
@@ -135,6 +135,12 @@ def run_job(job_id: str) -> None:
             stage = "translate"
             rows = _stage_translate(job, cfg, tracker, utterances)
             _check_cancelled(job)
+            stage = "timing"
+            rows = _stage_timing(job, cfg, tracker, rows, chunks=None, audio_path=None)
+            _check_cancelled(job)
+            stage = "qc"
+            rows = _stage_qc(job, cfg, tracker, rows, audio_path=None)
+            _check_cancelled(job)
             stage = "format"
             files = _stage_format(job, cfg, rows)
         else:  # "full"
@@ -152,6 +158,12 @@ def run_job(job_id: str) -> None:
             _check_cancelled(job)
             stage = "translate"
             rows = _stage_translate(job, cfg, tracker, utterances)
+            _check_cancelled(job)
+            stage = "timing"
+            rows = _stage_timing(job, cfg, tracker, rows, chunks=chunks, audio_path=audio_path)
+            _check_cancelled(job)
+            stage = "qc"
+            rows = _stage_qc(job, cfg, tracker, rows, audio_path=audio_path)
             _check_cancelled(job)
             stage = "format"
             files = _stage_format(job, cfg, rows)
@@ -467,6 +479,104 @@ def _stage_translate(job: Job, cfg, tracker,
                         encoding="utf-8")
     _emit(job, "translate", "done", f"{len(rows)} baris")
     return rows
+
+
+def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
+                  chunks, audio_path: Path | None) -> list[dict]:
+    timing_path = job.dir / "timing" / "utterances.json"
+    if timing_path.exists():
+        result = json.loads(timing_path.read_text(encoding="utf-8"))
+        _emit(job, "timing", "done", f"{len(result)} ujaran (checkpoint)")
+        return result
+
+    if chunks is None or audio_path is None:
+        _emit(job, "timing", "done", "dilewati (translation_only mode)")
+        return rows
+
+    n = len(chunks)
+    _emit(job, "timing", "start",
+          f"koreksi timing {len(rows)} ujaran via Gemini ({n} chunk)")
+
+    gemini = providers.GeminiClient(cfg.gemini_api_key, cfg.timing_model)
+    utterances = [transcribe.Utterance.from_dict(r) for r in rows]
+
+    context_md, members_md = _read_context(
+        job.params.get("group"), job.params.get("context_preset")
+    )
+
+    def on_progress(chunk_idx: int, total: int) -> None:
+        _emit(job, "timing", "progress", f"chunk {chunk_idx}/{total}")
+
+    corrected, report = timing.reanchor_all(
+        utterances, chunks, job.dir / "chunks",
+        gemini=gemini, tracker=tracker, on_progress=on_progress,
+    )
+
+    corrected_by_id = {u.id: u for u in corrected}
+    result = []
+    for r in rows:
+        u = corrected_by_id.get(r["id"])
+        if u:
+            result.append({**r, "start": u.start, "end": u.end})
+        else:
+            result.append(r)
+
+    timing.save_timing(corrected, report, job.dir)
+
+    n_corrected = sum(1 for e in report if e.get("status") == "corrected")
+    n_fallback = sum(1 for e in report if e.get("status") == "fallback")
+    _emit(job, "timing", "done",
+          f"{n_corrected} chunk dikoreksi, {n_fallback} fallback ke timestamp asli")
+    return result
+
+
+def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
+              audio_path: Path | None) -> list[dict]:
+    qc_path = job.dir / "qc" / "utterances.json"
+    if qc_path.exists():
+        result = qc.load_qc(job.dir)
+        _emit(job, "qc", "done", f"{len(result)} ujaran (checkpoint)")
+        return result
+
+    if audio_path is None:
+        _emit(job, "qc", "done", "dilewati (tidak ada audio)")
+        return rows
+
+    _emit(job, "qc", "start",
+          f"QC {len(rows)} ujaran (batch={cfg.qc_batch_size}, window={cfg.qc_window_size})")
+
+    context_md, members_md = _read_context(
+        job.params.get("group"), job.params.get("context_preset")
+    )
+    if job.params.get("context_override"):
+        context_md = job.params["context_override"]
+    additional_context = job.params.get("additional_context") or None
+
+    system = qc.build_qc_system(context_md, members_md,
+                                additional_context=additional_context)
+    gemini = providers.GeminiClient(cfg.gemini_api_key, cfg.qc_model)
+
+    n_batches = (len(rows) + cfg.qc_batch_size - 1) // cfg.qc_batch_size
+
+    def on_batch(done: int, total: int) -> None:
+        _emit(job, "qc", "progress", f"batch {done}/{total}")
+
+    fixed_rows, issues = qc.run_qc_all(
+        gemini, rows, audio_path, job.dir / "chunks" / "qc_tmp",
+        system, tracker,
+        batch_size=cfg.qc_batch_size,
+        window_size=cfg.qc_window_size,
+        on_batch=on_batch,
+    )
+
+    qc.save_qc(fixed_rows, issues, job.dir)
+
+    translation_fixes = sum(1 for i in issues if i.get("type") == "translation")
+    timing_flags = sum(1 for i in issues if i.get("type") == "timing")
+    _emit(job, "qc", "done",
+          f"{translation_fixes} terjemahan diperbaiki, {timing_flags} timing diflag",
+          result={"issues": issues})
+    return fixed_rows
 
 
 def _stage_format(job: Job, cfg, rows: list[dict]) -> list[str]:

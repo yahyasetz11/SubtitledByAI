@@ -50,6 +50,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr("app.providers.make_transcriber", lambda cfg, model=None: object())
     monkeypatch.setattr("app.providers.make_translator",
                         lambda cfg, p, model=None: object())
+    monkeypatch.setattr("app.timing.reanchor_all",
+                        lambda utterances, chunks, chunks_dir, gemini, tracker, on_progress=None: (utterances, []))
+    monkeypatch.setattr("app.qc.run_qc_all",
+                        lambda gemini, rows, audio_path, tmp_dir, system, tracker, **kw: (rows, []))
     return counters
 
 

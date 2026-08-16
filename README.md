@@ -119,6 +119,62 @@ Saat membuat job, konteks ditentukan secara otomatis dari pilihan grup + show. T
 
 ---
 
+## Konfigurasi `.env`
+
+Salin `.env.example` menjadi `.env` lalu sesuaikan nilainya.
+
+### API Keys
+
+| Variabel | Wajib | Keterangan |
+|---|---|---|
+| `GEMINI_API_KEY` | **Ya** | Untuk transkripsi dan translasi default |
+| `OPENAI_API_KEY` | Tidak | Aktifkan provider GPT di dropdown |
+| `ANTHROPIC_API_KEY` | Tidak | Aktifkan provider Claude di dropdown |
+
+Provider tanpa API key tidak muncul di dropdown UI.
+
+### Model
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `TRANSCRIBE_MODEL` | `gemini-2.5-pro` | Model Gemini untuk transkripsi |
+| `TRANSLATE_MODEL_GEMINI` | `gemini-2.5-flash` | Model Gemini untuk translasi |
+| `TRANSLATE_MODEL_OPENAI` | `gpt-4o` | Model OpenAI untuk translasi |
+| `TRANSLATE_MODEL_ANTHROPIC` | `claude-sonnet-4-6` | Model Anthropic untuk translasi |
+| `TIMING_MODEL` | `gemini-2.5-flash` | Model untuk koreksi timing (harus Gemini — butuh audio multimodal) |
+| `QC_MODEL` | `gemini-2.5-flash` | Model untuk QC agent (harus Gemini — butuh audio multimodal) |
+
+### Download YouTube
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `YTDLP_COOKIES_FILE` | _(kosong)_ | Path ke file cookies untuk video region-locked/membership. Isi path saja tanpa komentar inline, misal: `YTDLP_COOKIES_FILE=C:\cookies.txt` |
+
+### Subtitle
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `SUB_MIN_DURATION` | `0.7` | Durasi minimum subtitle (detik) |
+| `SUB_MAX_DURATION` | `7.5` | Durasi maksimum subtitle (detik) |
+| `SUB_MERGE_GAP` | `0.5` | Gap antar baris yang digabung jika terlalu pendek (detik) |
+| `SUB_CPS_FLAG` | `25` | Threshold karakter per detik — baris di atas nilai ini masuk `flags.json` |
+
+### Chunking Audio
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `CHUNK_MIN_MINUTES` | `4` | Ukuran chunk minimum (menit). Chunk lebih kecil = akurasi timestamp lebih baik |
+| `CHUNK_MAX_MINUTES` | `6` | Ukuran chunk maksimum (menit). Chunk lebih besar = lebih hemat API call |
+
+### QC Agent
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `QC_WINDOW_SIZE` | `10` | Jumlah baris konteks sebelum/sesudah batch yang dikirim ke QC |
+| `QC_BATCH_SIZE` | `20` | Jumlah ujaran per LLM call QC |
+
+---
+
 ## Menjalankan test
 
 ```powershell
