@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+blogger/
 
 # Claude working artifacts
 cookie.txt
@@ -15,3 +16,4 @@ non_ascii_contexts.txt
 plan_html.txt
 resume.txt
 task18_plan_extract.txt
+

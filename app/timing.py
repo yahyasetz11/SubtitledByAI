@@ -179,11 +179,12 @@ def reanchor_all(
     return result, report
 
 
-def save_timing(utterances: list[Utterance], report: list[dict], out_dir: Path) -> None:
+def save_timing(rows: list[dict] | list[Utterance], report: list[dict], out_dir: Path) -> None:
     timing_dir = out_dir / "timing"
     timing_dir.mkdir(exist_ok=True)
+    serialized = [u.to_dict() if isinstance(u, Utterance) else u for u in rows]
     (timing_dir / "utterances.json").write_text(
-        json.dumps([u.to_dict() for u in utterances], ensure_ascii=False, indent=2),
+        json.dumps(serialized, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     (timing_dir / "report.json").write_text(
@@ -192,6 +193,6 @@ def save_timing(utterances: list[Utterance], report: list[dict], out_dir: Path) 
     )
 
 
-def load_timing(out_dir: Path) -> list[Utterance]:
+def load_timing(out_dir: Path) -> list[dict]:
     path = out_dir / "timing" / "utterances.json"
-    return [Utterance.from_dict(d) for d in json.loads(path.read_text(encoding="utf-8"))]
+    return json.loads(path.read_text(encoding="utf-8"))

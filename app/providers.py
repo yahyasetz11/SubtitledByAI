@@ -98,9 +98,9 @@ class Config:
             gemini_api_key=gemini_key,
             openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip() or None,
             anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip() or None,
-            transcribe_model=os.getenv("TRANSCRIBE_MODEL", "gemini-2.5-pro"),
+            transcribe_model=os.getenv("TRANSCRIBE_MODEL", "gemini-3.7-flash"),
             translate_models={
-                "gemini": os.getenv("TRANSLATE_MODEL_GEMINI", "gemini-2.5-flash"),
+                "gemini": os.getenv("TRANSLATE_MODEL_GEMINI", "gemini-3.7-flash"),
                 "openai": os.getenv("TRANSLATE_MODEL_OPENAI", "gpt-4o"),
                 "anthropic": os.getenv("TRANSLATE_MODEL_ANTHROPIC", "claude-sonnet-4-6"),
             },
@@ -174,6 +174,7 @@ def call_with_retries(fn, *, attempts: int = 4, base_delay: float = 2.0,
 PRICING = {
     # Gemini 3.x (preview/lite — use 2.5-flash pricing as estimate until official pricing published)
     "gemini-3.1-pro-preview": (3.50, 10.50),
+    "gemini-3.7-flash": (1.50, 7.50),
     "gemini-3.6-flash": (1.50, 7.50),
     "gemini-3.5-flash": (0.30, 2.50),
     "gemini-3-flash-preview": (0.30, 2.50),

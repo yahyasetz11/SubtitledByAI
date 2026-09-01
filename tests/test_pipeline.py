@@ -42,7 +42,7 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.audio.download_youtube", fake_download)
     monkeypatch.setattr("app.audio.normalize_audio", fake_normalize)
-    monkeypatch.setattr("app.audio.get_duration", lambda p: 700.0)
+    monkeypatch.setattr("app.audio.get_duration", lambda p: 200.0)
     monkeypatch.setattr("app.audio.detect_silences", lambda p, t: [])
     monkeypatch.setattr("app.audio.cut_chunk", fake_cut)
     monkeypatch.setattr("app.transcribe.transcribe_chunk", fake_transcribe_chunk)

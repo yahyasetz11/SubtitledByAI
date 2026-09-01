@@ -485,7 +485,7 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
                   chunks, audio_path: Path | None) -> list[dict]:
     timing_path = job.dir / "timing" / "utterances.json"
     if timing_path.exists():
-        result = json.loads(timing_path.read_text(encoding="utf-8"))
+        result = timing.load_timing(job.dir)
         _emit(job, "timing", "done", f"{len(result)} ujaran (checkpoint)")
         return result
 
@@ -521,7 +521,7 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
         else:
             result.append(r)
 
-    timing.save_timing(corrected, report, job.dir)
+    timing.save_timing(result, report, job.dir)
 
     n_corrected = sum(1 for e in report if e.get("status") == "corrected")
     n_fallback = sum(1 for e in report if e.get("status") == "fallback")
@@ -583,7 +583,7 @@ def _stage_format(job: Job, cfg, rows: list[dict]) -> list[str]:
     fmt = job.params.get("output_format", "both")
     _emit(job, "format", "start", f"post-processing & render ({fmt})")
     events = [SubEvent(start=float(r["start"]), end=float(r["end"]),
-                       text=r["id_text"], type=r.get("type", "dialogue"))
+                       text=r.get("id_text", ""), type=r.get("type", "dialogue"))
               for r in rows]
     processed, flags = subtitle.postprocess(
         events, min_duration=cfg.sub_min_duration,

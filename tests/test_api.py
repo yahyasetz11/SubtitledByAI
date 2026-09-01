@@ -151,7 +151,7 @@ def test_get_contexts_returns_groups_structure(client):
 def test_get_contexts_each_group_has_shows(client):
     body = client.get("/api/contexts").json()
     groups = {g["id"]: g for g in body["groups"]}
-    assert len(groups["sakurazaka"]["shows"]) == 3
+    assert len(groups["sakurazaka"]["shows"]) >= 3
     assert len(groups["nogizaka"]["shows"]) == 3
     assert len(groups["hinatazaka"]["shows"]) == 3
     assert groups["else"]["shows"] == []

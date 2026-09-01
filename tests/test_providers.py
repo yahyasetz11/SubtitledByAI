@@ -12,9 +12,9 @@ def test_config_loads_keys_and_defaults(monkeypatch):
     cfg = Config.load()
 
     assert cfg.gemini_api_key == "g-key"
-    assert cfg.transcribe_model == "gemini-2.5-pro"
+    assert cfg.transcribe_model == "gemini-3.7-flash"
     assert cfg.translate_models == {
-        "gemini": "gemini-2.5-flash",
+        "gemini": "gemini-3.7-flash",
         "openai": "gpt-4o",
         "anthropic": "claude-sonnet-4-6",
     }
