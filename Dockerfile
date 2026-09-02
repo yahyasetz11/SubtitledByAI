@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/       app/
 COPY static/    static/
 COPY context/   context/
+COPY config/    config/
 
 # ── Port declaration ──────────────────────────────────────────────────────────
 # Tell Docker this container listens on port 8000.
