@@ -1,5 +1,7 @@
 {
   "transcription": [
+    "gemini-3.8-flash",
+    "gemini-3.5-live-translate-preview",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.1-pro-preview",
@@ -12,6 +14,7 @@
   ],
   "translation": {
     "gemini": [
+      "gemini-3.8-flash",
       "gemini-3.7-flash",
       "gemini-3.6-flash",
       "gemini-3.5-flash",
@@ -26,11 +29,13 @@
     "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
   },
   "defaults": {
-    "transcription": "gemini-3.7-flash",
+    "transcription": "gemini-3.6-flash",
     "translation": {
-      "gemini": "gemini-3.7-flash",
+      "gemini": "gemini-3.6-flash",
       "openai": "gpt-4o",
       "anthropic": "claude-sonnet-4-6"
-    }
+    },
+    "timing": "gemini-3.6-flash",
+    "qc": "gemini-3.6-flash"
   }
 }
