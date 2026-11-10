@@ -4,19 +4,20 @@ from app.providers import Config, ConfigError
 
 
 def test_config_loads_keys_and_defaults(monkeypatch):
+    from app.providers import load_models_config
     monkeypatch.setenv("GEMINI_API_KEY", "g-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("TRANSCRIBE_MODEL", raising=False)
 
     cfg = Config.load()
+    models = load_models_config()
 
     assert cfg.gemini_api_key == "g-key"
-    assert cfg.transcribe_model == "gemini-3.7-flash"
+    assert cfg.transcribe_model == models["defaults"]["transcription"]
     assert cfg.translate_models == {
-        "gemini": "gemini-3.7-flash",
-        "openai": "gpt-4o",
-        "anthropic": "claude-sonnet-4-6",
+        "gemini": models["defaults"]["translation"]["gemini"],
+        "openai": models["defaults"]["translation"]["openai"],
+        "anthropic": models["defaults"]["translation"]["anthropic"],
     }
     assert cfg.available_providers() == {
         "gemini": True, "openai": False, "anthropic": False,
@@ -32,12 +33,10 @@ def test_config_loads_keys_and_defaults(monkeypatch):
 def test_config_env_overrides(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("OPENAI_API_KEY", "o")
-    monkeypatch.setenv("TRANSCRIBE_MODEL", "gemini-3.0-pro")
     monkeypatch.setenv("SUB_CPS_FLAG", "30")
 
     cfg = Config.load()
 
-    assert cfg.transcribe_model == "gemini-3.0-pro"
     assert cfg.sub_cps_flag == pytest.approx(30.0)
     assert cfg.available_providers()["openai"] is True
 
@@ -395,3 +394,54 @@ def test_make_translator_falls_back_to_cfg_model():
     with patch("app.providers.GeminiClient") as MockClient:
         make_translator(cfg, "gemini")
         MockClient.assert_called_once_with(cfg.gemini_api_key, "gemini-2.5-flash")
+
+
+from app.providers import (
+    get_active_gemini_label,
+    make_audio_client,
+    make_text_client,
+    resolve_gemini_key,
+)
+
+
+def test_resolve_gemini_key_uses_label_without_mutating_global(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_WORK", "g-work")
+    assert get_active_gemini_label() == "Default"
+    assert resolve_gemini_key("WORK") == "g-work"
+    assert get_active_gemini_label() == "Default"
+
+
+def test_resolve_gemini_key_unknown_label_raises(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    with pytest.raises(ConfigError, match="NOPE"):
+        resolve_gemini_key("NOPE")
+
+
+def test_make_audio_client_uses_specific_key_label(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_ALT", "g-alt")
+    cfg = _fake_cfg()
+    with patch("app.providers.GeminiClient") as MockClient:
+        make_audio_client(cfg, model="gemini-3.5-flash", key_label="ALT")
+        MockClient.assert_called_once_with("g-alt", "gemini-3.5-flash")
+    assert get_active_gemini_label() == "Default"
+
+
+def test_make_text_client_uses_specific_gemini_key_label(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-default")
+    monkeypatch.setenv("GEMINI_API_KEY_ALT", "g-alt")
+    cfg = _fake_cfg()
+    with patch("app.providers.GeminiClient") as MockClient:
+        make_text_client(cfg, "gemini", model="gemini-3.6-flash", key_label="ALT")
+        MockClient.assert_called_once_with("g-alt", "gemini-3.6-flash")
+
+
+def test_make_text_client_delegates_openai_and_anthropic():
+    cfg = _fake_cfg()
+    with patch("app.providers.OpenAIClient") as MockOAI:
+        make_text_client(cfg, "openai", model="gpt-4.1")
+        MockOAI.assert_called_once_with("okey", "gpt-4.1")
+    with patch("app.providers.AnthropicClient") as MockAnt:
+        make_text_client(cfg, "anthropic", model="claude-haiku-4-5")
+        MockAnt.assert_called_once_with("akey", "claude-haiku-4-5")
