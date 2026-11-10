@@ -179,7 +179,7 @@ def _unpack_checkpoint(raw, expected_count: int) -> tuple[list[Utterance], dict]
             return None
         utts.append(u)
 
-    if expected_count > 0 and status != "skipped" and len(utts) != expected_count:
+    if len(utts) != expected_count or (status == "skipped") != (expected_count == 0):
         return None
     return utts, report_entry
 

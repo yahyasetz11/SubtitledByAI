@@ -386,6 +386,64 @@ def test_reanchor_all_recomputes_on_corrupt_checkpoint(tmp_path, bad_ckpt):
     assert saved[1]["utterances"][0]["start"] == pytest.approx(1.6)
 
 
+@pytest.mark.parametrize("stale_ckpt", [
+    {"utterances": [], "report_entry": {"chunk": 1, "status": "skipped", "reason": "no_utterances"}},
+    {"utterances": [_utt(1, 1.0, 2.0, "一").to_dict()], "report_entry": {"chunk": 1, "status": "skipped"}},
+])
+def test_reanchor_all_recomputes_skipped_checkpoint_when_chunk_has_utterances(tmp_path, stale_ckpt):
+    chunks_dir = tmp_path / "chunks"
+    _make_chunk_file(chunks_dir, 1)
+    chunks = _make_chunks((1, 0.0, 10.0))
+    utts = [_utt(1, 1.0, 2.0, "一")]
+    saved = {}
+    runner_calls = []
+
+    def fake_runner(path, system, user):
+        runner_calls.append(path.name)
+        return LLMResponse(
+            text='[{"id": 1, "start": 1.6, "end": 2.6}]',
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.5-flash"
+
+    result, report = reanchor_all(
+        utts, chunks, chunks_dir, gemini=None, tracker=FakeTracker(),
+        audio_runner=fake_runner,
+        load_checkpoint=lambda idx: stale_ckpt,
+        save_checkpoint=lambda idx, payload: saved.__setitem__(idx, payload),
+    )
+    assert runner_calls == ["chunk_001.mp3"]
+    assert result == [_utt(1, 1.6, 2.6, "一")]
+    assert report == [{"chunk": 1, "status": "corrected", "count": 1}]
+    assert saved[1]["report_entry"]["status"] == "corrected"
+
+
+@pytest.mark.parametrize("stale_ckpt", [
+    {"utterances": [_utt(1, 1.2, 2.2, "幻").to_dict()], "report_entry": {"chunk": 1, "status": "corrected", "count": 1}},
+    {"utterances": [_utt(1, 1.2, 2.2, "幻").to_dict()], "report_entry": {"chunk": 1, "status": "skipped", "reason": "no_utterances"}},
+])
+def test_reanchor_all_returns_skipped_when_empty_chunk_has_non_empty_checkpoint(tmp_path, stale_ckpt):
+    chunks_dir = tmp_path / "chunks"
+    _make_chunk_file(chunks_dir, 1)
+    chunks = _make_chunks((1, 0.0, 10.0))
+    saved = {}
+
+    def unexpected_runner(path, system, user):
+        raise AssertionError("audio_runner should not be called for empty chunk")
+
+    result, report = reanchor_all(
+        [], chunks, chunks_dir, gemini=None, tracker=FakeTracker(),
+        audio_runner=unexpected_runner,
+        load_checkpoint=lambda idx: stale_ckpt,
+        save_checkpoint=lambda idx, payload: saved.__setitem__(idx, payload),
+    )
+    assert result == []
+    assert report == [{"chunk": 1, "status": "skipped", "reason": "no_utterances"}]
+    assert saved[1] == {
+        "utterances": [],
+        "report_entry": {"chunk": 1, "status": "skipped", "reason": "no_utterances"},
+    }
+
+
 def test_reanchor_all_propagates_error_after_saving_prior_checkpoint(tmp_path):
     chunks_dir = tmp_path / "chunks"
     _make_chunk_file(chunks_dir, 1, b"a")
