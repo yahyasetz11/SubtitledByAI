@@ -216,6 +216,211 @@ def parse_qc_response(text: str) -> list[dict]:
     return data
 
 
+TEXT_QC_SINGLE_LIMIT = 250
+TEXT_QC_WINDOW = 200
+TEXT_QC_OVERLAP = 30
+
+
+def build_text_qc_user_prompt(
+    rows: list[dict],
+    glossary: dict[str, str],
+    audit_flags: dict[int, list[str]],
+    *,
+    check_ids: set[int] | None = None,
+) -> str:
+    gloss_block = (
+        "\n".join(f"- {jp} -> {id_val}" for jp, id_val in glossary.items())
+        if glossary else "(belum ada istilah khusus)"
+    )
+    items = []
+    for r in rows:
+        rid = int(r["id"])
+        dur = round(max(0.0, float(r["end"]) - float(r["start"])), 2)
+        entry = {
+            "id": rid,
+            "dur": dur,
+            "ja": str(r.get("ja") or ""),
+            "id_text": str(r.get("id_text") or ""),
+        }
+        if check_ids is not None and rid not in check_ids:
+            entry["context_only"] = True
+        if audit_flags and rid in audit_flags:
+            entry["audit_flags"] = audit_flags[rid]
+        items.append(entry)
+
+    return (
+        "=== GLOSARIUM EPISODE (WAJIB KONSISTEN) ===\n"
+        + gloss_block
+        + "\n\n=== TRANSKRIP & TERJEMAHAN ===\n"
+        + json.dumps(items, ensure_ascii=False)
+        + "\n\nTugasmu (HANYA kembalikan item yang perlu diperbaiki atau dicek ulang audionya):\n"
+        "1. Seragamkan terjemahan istilah berulang/segmen/nama acara di seluruh episode.\n"
+        "2. Perbaiki style guide (pakai aku/kamu, tanpa sisa kana/kanji Jepang, ringkas baris >25 CPS).\n"
+        "3. Pastikan maksimal 2 pembicara per baris (format '- Baris 1\\n- Baris 2').\n"
+        "4. Tandai needs_audio_check=true jika teks 'ja' tampak salah dengar, aneh secara konteks, atau bertumpuk 3+ pembicara.\n\n"
+        "Balas HANYA array JSON berisi item bermasalah saja (boleh [] jika semua baik):\n"
+        '[{"id": <id>, "fixed_id_text": "<terjemahan baru atau string kosong>", '
+        '"needs_audio_check": true|false, "reason": "<alasan singkat>"}]'
+    )
+
+
+def _safe_item_id(raw_id) -> int | None:
+    if isinstance(raw_id, (bool, float, list, dict)) or raw_id is None:
+        if isinstance(raw_id, float) and raw_id.is_integer():
+            return int(raw_id)
+        return None
+    try:
+        return int(raw_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_text_qc_results(
+    rows: list[dict],
+    qc_items: list[dict],
+) -> tuple[list[dict], list[dict], set[int]]:
+    by_id: dict[int, dict] = {}
+    for item in qc_items:
+        if not isinstance(item, dict):
+            continue
+        rid = _safe_item_id(item.get("id"))
+        if rid is not None:
+            by_id[rid] = item
+
+    updated: list[dict] = []
+    issues: list[dict] = []
+    audio_ids: set[int] = set()
+
+    for row in rows:
+        out = dict(row)
+        rid = int(row["id"])
+        item = by_id.get(rid)
+        if item is not None:
+            raw_fix = item.get("fixed_id_text")
+            fix = raw_fix.strip() if isinstance(raw_fix, str) else ""
+            reason = str(item.get("reason") or "")
+            if fix and fix != str(row.get("id_text") or "").strip():
+                issues.append({
+                    "id": rid,
+                    "pass": "text_qc",
+                    "type": "translation",
+                    "original": str(row.get("id_text") or ""),
+                    "fixed": fix,
+                    "reason": reason,
+                })
+                out["id_text"] = fix
+            if item.get("needs_audio_check") is True:
+                audio_ids.add(rid)
+                issues.append({
+                    "id": rid,
+                    "pass": "text_qc",
+                    "type": "audio_flag",
+                    "reason": reason or "ja/timing dicurigai perlu dicek audio",
+                })
+        updated.append(out)
+    return updated, issues, audio_ids
+
+
+def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_count: int):
+    if checkpoint_path is None or not checkpoint_path.exists():
+        return None
+    try:
+        saved = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(saved, dict):
+        return None
+    rows = saved.get("rows")
+    issues = saved.get("issues")
+    audio_ids = saved.get("audio_ids")
+    if not isinstance(rows, list) or not isinstance(issues, list) or not isinstance(audio_ids, list):
+        return None
+    if len(rows) != expected_count:
+        return None
+    if not all(isinstance(r, dict) and _safe_item_id(r.get("id")) is not None for r in rows):
+        return None
+    if not all(isinstance(i, dict) for i in issues):
+        return None
+    parsed_ids: set[int] = set()
+    for x in audio_ids:
+        rid = _safe_item_id(x)
+        if rid is None:
+            return None
+        parsed_ids.add(rid)
+    return rows, issues, parsed_ids
+
+
+def run_text_qc(
+    rows: list[dict],
+    *,
+    system: str,
+    glossary: dict[str, str],
+    audit_flags: dict[int, list[str]],
+    tracker,
+    text_runner,
+    checkpoint_path: Path | None = None,
+) -> tuple[list[dict], list[dict], set[int]]:
+    """Run Pass 1B whole-episode text consistency QC."""
+    cached = _load_text_qc_checkpoint(checkpoint_path, len(rows))
+    if cached is not None:
+        return cached
+
+    if not rows:
+        return [], [], set()
+
+    if len(rows) <= TEXT_QC_SINGLE_LIMIT:
+        windows = [(rows, None)]
+    else:
+        windows = []
+        step = TEXT_QC_WINDOW - TEXT_QC_OVERLAP
+        for start in range(0, len(rows), step):
+            slice_rows = rows[start:start + TEXT_QC_WINDOW]
+            if start == 0:
+                check_ids = None
+            else:
+                check_ids = {int(r["id"]) for r in slice_rows[TEXT_QC_OVERLAP:]}
+            windows.append((slice_rows, check_ids))
+            if start + TEXT_QC_WINDOW >= len(rows):
+                break
+
+    current = [dict(r) for r in rows]
+    all_issues: list[dict] = []
+    all_audio_ids: set[int] = set()
+
+    for win_rows, check_ids in windows:
+        by_cur = {int(r["id"]): r for r in current}
+        refreshed = [by_cur[int(r["id"])] for r in win_rows]
+        prompt = build_text_qc_user_prompt(refreshed, glossary, audit_flags, check_ids=check_ids)
+        response, model_used = text_runner(system, prompt)
+        if tracker is not None:
+            tracker.add(model_used, response.input_tokens, response.output_tokens)
+        qc_items = parse_qc_response(response.text)
+        allowed_ids = check_ids if check_ids is not None else {int(r["id"]) for r in win_rows}
+        filtered = []
+        for it in qc_items:
+            if not isinstance(it, dict):
+                continue
+            rid = _safe_item_id(it.get("id"))
+            if rid is not None and rid in allowed_ids:
+                filtered.append(it)
+        qc_items = filtered
+        current, win_issues, win_audio = apply_text_qc_results(current, qc_items)
+        all_issues.extend(win_issues)
+        all_audio_ids |= win_audio
+
+    if checkpoint_path is not None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_path.write_text(
+            json.dumps({
+                "rows": current,
+                "issues": all_issues,
+                "audio_ids": sorted(all_audio_ids),
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    return current, all_issues, all_audio_ids
+
+
 def apply_qc_results(
     batch_rows: list[dict],
     qc_results: list[dict],
