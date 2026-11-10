@@ -5,12 +5,22 @@ import re as _re
 from dataclasses import dataclass
 
 
+def _count_speaker_turns(text: str) -> int:
+    dashed_lines = [ln for ln in text.splitlines() if ln.lstrip().startswith("- ")]
+    return max(1, len(dashed_lines))
+
+
 @dataclass
 class SubEvent:
     start: float
     end: float
     text: str
     type: str = "dialogue"  # "dialogue" | "narration"
+    turns: int = 0
+
+    def __post_init__(self) -> None:
+        if self.turns <= 0:
+            self.turns = _count_speaker_turns(self.text)
 
     @property
     def duration(self) -> float:
@@ -20,7 +30,7 @@ class SubEvent:
 def postprocess(events: list[SubEvent], *, min_duration: float,
                 max_duration: float, merge_gap: float,
                 cps_threshold: float) -> tuple[list[SubEvent], list[dict]]:
-    evs = sorted((SubEvent(e.start, e.end, e.text.strip(), e.type)
+    evs = sorted((SubEvent(e.start, e.end, e.text.strip(), e.type, e.turns)
                   for e in events if e.text.strip()), key=lambda e: e.start)
     evs = _merge_short(evs, min_duration, merge_gap, max_duration)
     evs = _extend_short(evs, min_duration)
@@ -30,7 +40,7 @@ def postprocess(events: list[SubEvent], *, min_duration: float,
 
 
 def _merge_short(events, min_duration, merge_gap, max_duration):
-    """§7: short reaction + continuation, gap < merge_gap, same type -> one block."""
+    """§7: short reaction + continuation, gap < merge_gap, same type, max 2 turns -> one block."""
     result: list[SubEvent] = []
     for ev in events:
         if result:
@@ -38,10 +48,17 @@ def _merge_short(events, min_duration, merge_gap, max_duration):
             gap = ev.start - prev.end
             short_involved = (prev.duration < min_duration
                               or ev.duration < min_duration)
+            within_turn_cap = (prev.turns + ev.turns) <= 2
+            has_dashed = (
+                any(ln.lstrip().startswith("- ") for ln in prev.text.splitlines())
+                or any(ln.lstrip().startswith("- ") for ln in ev.text.splitlines())
+            )
             if (gap < merge_gap and ev.type == prev.type and short_involved
+                    and within_turn_cap and not has_dashed
                     and (ev.end - prev.start) <= max_duration):
                 result[-1] = SubEvent(prev.start, ev.end,
-                                      f"{prev.text} {ev.text}", prev.type)
+                                      f"{prev.text} {ev.text}", prev.type,
+                                      turns=prev.turns + ev.turns)
                 continue
         result.append(ev)
     return result

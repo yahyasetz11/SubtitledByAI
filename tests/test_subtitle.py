@@ -188,3 +188,44 @@ def test_parse_ass_utterances_newline_normalization():
     )
     utts = parse_ass_utterances(ass)
     assert utts[0].ja == "一行目\n二行目"
+
+
+def test_merge_short_never_chains_past_two_blocks():
+    # Four rapid <0.7s blocks should NOT all collapse into one giant 4-speaker line.
+    events, _ = run([
+        E(0.0, 0.4, "Eh!?"),
+        E(0.5, 0.9, "Serius?!"),
+        E(1.0, 1.4, "Masa sih!?"),
+        E(1.5, 1.9, "Keren banget!"),
+    ])
+    assert len(events) == 2
+    assert events[0].text == "Eh!? Serius?!"
+    assert events[1].text == "Masa sih!? Keren banget!"
+
+
+def test_merge_short_does_not_merge_two_speaker_dashed_block():
+    two_speaker = "- Eh!?\n- Serius?!"
+    events, _ = run([
+        E(0.0, 0.5, two_speaker),
+        E(0.6, 1.0, "Gila sih!"),
+    ])
+    assert len(events) == 2
+    assert events[0].text == two_speaker
+    assert events[1].text == "Gila sih!"
+
+
+def test_render_ass_preserves_two_speaker_dashed_lines():
+    out = render_ass([E(0.0, 1.5, "- Line 1\n- Line 2")], TEMPLATE)
+    assert "Dialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,- Line 1\\N- Line 2" in out
+
+
+def test_postprocess_stripping_preserves_turns():
+    events, _ = run([
+        SubEvent(start=0.0, end=0.4, text="  Halo!  ", turns=2),
+        SubEvent(start=0.5, end=0.9, text="  Dunia!  "),
+    ])
+    assert len(events) == 2
+    assert events[0].text == "Halo!"
+    assert events[0].turns == 2
+    assert events[1].text == "Dunia!"
+    assert events[1].turns == 1
