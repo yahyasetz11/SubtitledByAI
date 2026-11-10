@@ -10,6 +10,7 @@ import json
 import threading
 import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ class Job:
     params: dict
     status: str = "queued"  # queued | running | done | failed | cancelled
     error: str | None = None
+    failed_stage: str | None = None
     events: list[dict] = field(default_factory=list)
     cancelled: bool = False
 
@@ -64,6 +66,7 @@ def load_job(job_id: str) -> Job | None:
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     job = Job(id=meta["id"], dir=OUTPUT_DIR / job_id, params=meta["params"],
               status=meta["status"], error=meta.get("error"),
+              failed_stage=meta.get("failed_stage"),
               events=meta.get("events", []))
     JOBS[job.id] = job
     return job
@@ -86,18 +89,21 @@ def _check_cancelled(job: Job) -> None:
 
 def _save(job: Job) -> None:
     payload = {"id": job.id, "params": job.params, "status": job.status,
-               "error": job.error, "events": job.events}
+               "error": job.error, "failed_stage": job.failed_stage,
+               "events": job.events}
     (job.dir / "job.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _emit(job: Job, stage: str, status: str, message: str | None = None,
-          result: dict | None = None) -> None:
+          result: dict | None = None, failed_stage: str | None = None) -> None:
     event: dict = {"stage": stage, "status": status}
     if message:
         event["message"] = message
     if result is not None:
         event["result"] = result
+    if failed_stage is not None:
+        event["failed_stage"] = failed_stage
     job.events.append(event)
     _save(job)
 
@@ -108,7 +114,7 @@ def run_job(job_id: str) -> None:
         raise KeyError(f"Job tidak ditemukan: {job_id}")
     cfg = providers.Config.load()
     tracker = UsageTracker(job.dir / "usage.json")
-    job.status, job.error = "running", None
+    job.status, job.error, job.failed_stage = "running", None, None
     _save(job)
     stage = "init"
     mode = job.params.get("mode", "full")
@@ -174,11 +180,143 @@ def run_job(job_id: str) -> None:
     except JobCancelledError:
         job.status = "cancelled"
         job.error = "Dibatalkan oleh pengguna."
+        job.failed_stage = None
         _emit(job, stage, "cancelled", message="Job dibatalkan oleh pengguna.")
     except Exception as exc:  # noqa: BLE001
         job.status = "failed"
         job.error = str(exc)
-        _emit(job, stage, "error", message=str(exc))
+        job.failed_stage = stage
+        _emit(job, stage, "error", message=str(exc), failed_stage=stage)
+
+
+def _load_json_safe(path: Path, default, expected_type=None):
+    if not path.exists():
+        return default
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return default
+    if expected_type is not None and not isinstance(data, expected_type):
+        return default
+    return data
+
+
+def _parse_audio_fallback(params: dict) -> list[providers.AudioFallbackSlot]:
+    slots: list[providers.AudioFallbackSlot] = []
+    for s in params.get("audio_fallback") or []:
+        if not isinstance(s, dict):
+            continue
+        key_label = str(s.get("key_label") or "").strip()
+        model = str(s.get("model") or "").strip()
+        if key_label and model:
+            slots.append(providers.AudioFallbackSlot(key_label=key_label, model=model))
+        if len(slots) == 3:
+            break
+    return slots
+
+
+def _parse_translate_fallback(params: dict) -> list[providers.TranslateFallbackSlot]:
+    slots: list[providers.TranslateFallbackSlot] = []
+    for s in params.get("translate_fallback") or []:
+        if not isinstance(s, dict):
+            continue
+        provider = str(s.get("provider") or "").strip()
+        model = str(s.get("model") or "").strip()
+        raw_label = s.get("key_label")
+        key_label = str(raw_label).strip() or None if raw_label is not None else None
+        if provider and model:
+            slots.append(providers.TranslateFallbackSlot(
+                provider=provider,
+                model=model,
+                key_label=key_label,
+            ))
+        if len(slots) == 3:
+            break
+    return slots
+
+
+def _make_audio_runner(job: Job, cfg, stage: str, primary_model: str, primary_client=None):
+    primary_slot = providers.AudioFallbackSlot(
+        key_label=providers.get_active_gemini_label(),
+        model=primary_model,
+    )
+    fallback_slots = _parse_audio_fallback(job.params)
+
+    def _build(slot: providers.AudioFallbackSlot):
+        if (
+            primary_client is not None
+            and slot == primary_slot
+            and hasattr(primary_client, "upload_audio")
+        ):
+            return primary_client
+        return providers.make_audio_client(cfg, model=slot.model, key_label=slot.key_label)
+
+    def _resolve_key(slot: providers.AudioFallbackSlot) -> str:
+        return providers.resolve_gemini_key(slot.key_label, fallback_key=cfg.gemini_api_key)
+
+    def runner(chunk_path: Path, system: str, user: str, on_upload_done=None):
+        def _on_fb(idx: int, slot: providers.AudioFallbackSlot, exc: Exception):
+            _emit(
+                job, stage, "progress",
+                f"{chunk_path.name} error ({exc}) -> mencoba Fallback {idx}: "
+                f"key {slot.key_label} / {slot.model}",
+            )
+
+        resp, winning = providers.execute_audio_with_fallback(
+            chunk_path=chunk_path,
+            primary=primary_slot,
+            fallback_slots=fallback_slots,
+            build_client=_build,
+            resolve_key=_resolve_key,
+            call_fn=lambda c, ref: c.generate(system=system, user=user, audio=ref),
+            on_upload_done=on_upload_done,
+            on_fallback=_on_fb,
+        )
+        return resp, winning.model
+
+    return runner
+
+
+def _make_text_runner(job: Job, cfg, stage: str, primary_client=None):
+    provider = job.params.get("translator", "gemini")
+    primary_model = job.params.get("translate_model") or cfg.translate_models.get(provider, "")
+    primary_slot = providers.TranslateFallbackSlot(
+        provider=provider,
+        model=primary_model,
+        key_label=providers.get_active_gemini_label() if provider == "gemini" else None,
+    )
+    fallback_slots = _parse_translate_fallback(job.params)
+
+    def _build(slot: providers.TranslateFallbackSlot):
+        if (
+            primary_client is not None
+            and slot == primary_slot
+            and hasattr(primary_client, "generate")
+        ):
+            return primary_client
+        return providers.make_text_client(
+            cfg, slot.provider, model=slot.model, key_label=slot.key_label
+        )
+
+    def runner(system: str, user: str):
+        def _on_fb(idx: int, slot: providers.TranslateFallbackSlot, exc: Exception):
+            key_info = f" ({slot.key_label})" if slot.key_label else ""
+            _emit(
+                job, stage, "progress",
+                f"error ({exc}) -> mencoba Fallback {idx}: "
+                f"{slot.provider}{key_info} / {slot.model}",
+            )
+
+        resp, winning = providers.execute_with_fallback(
+            primary=primary_slot,
+            fallback_slots=fallback_slots,
+            build_client=_build,
+            call_fn=lambda c: c.generate(system=system, user=user),
+            on_fallback=_on_fb,
+        )
+        return resp, winning.model
+
+    return runner
 
 
 def _read_context(group: str | None, preset: str | None) -> tuple[str, str]:
@@ -304,7 +442,9 @@ def _stage_transcribe(job: Job, cfg, tracker,
     additional_context = job.params.get("additional_context") or None
     system, user = transcribe.build_transcribe_prompts(context_md, members_md,
                                                        additional_context=additional_context)
-    gemini = providers.make_transcriber(cfg, model=job.params.get("transcribe_model"))
+    primary_model = job.params.get("transcribe_model") or cfg.transcribe_model
+    gemini = providers.make_transcriber(cfg, model=primary_model)
+    audio_runner = _make_audio_runner(job, cfg, "transcribe", primary_model, primary_client=gemini)
     n = len(chunks)
     _emit(job, "transcribe", "start", f"transkripsi {n} chunk")
     per_chunk: list[list[transcribe.Utterance]] = []
@@ -347,7 +487,9 @@ def _stage_transcribe(job: Job, cfg, tracker,
             try:
                 utts = transcribe.transcribe_chunk(
                     gemini, chunk_path, system, user, tracker,
-                    on_upload_done=_on_upload_done)
+                    on_upload_done=_on_upload_done,
+                    audio_runner=audio_runner,
+                )
             finally:
                 ctx["stop"].set()
                 hb.join(timeout=2)
@@ -447,24 +589,24 @@ def _stage_translate(job: Job, cfg, tracker,
     additional_context = job.params.get("additional_context") or None
     system = translate.build_translate_system(context_md, members_md,
                                               additional_context=additional_context)
+    translator = job.params.get("translator", "gemini")
     client = providers.make_translator(
-        cfg, job.params["translator"],
+        cfg, translator,
         model=job.params.get("translate_model") or None,
     )
+    text_runner = _make_text_runner(job, cfg, "translate", primary_client=client)
+    glossary: dict[str, str] = {}
     _emit(job, "translate", "start",
-          f"terjemahkan {len(utterances)} ujaran via "
-          f"{job.params['translator']}")
+          f"terjemahkan {len(utterances)} ujaran via {translator}")
 
-    def load_ckpt(batch_index: int) -> dict[int, str] | None:
+    def load_ckpt(batch_index: int):
         p = job.dir / "chunks" / f"translated_{batch_index:03d}.json"
-        if not p.exists():
-            return None
-        return {int(k): v
-                for k, v in json.loads(p.read_text(encoding="utf-8")).items()}
+        return _load_json_safe(p, None)
 
-    def save_ckpt(batch_index: int, mapping: dict[int, str]) -> None:
+    def save_ckpt(batch_index: int, payload) -> None:
         p = job.dir / "chunks" / f"translated_{batch_index:03d}.json"
-        p.write_text(json.dumps(mapping, ensure_ascii=False, indent=2),
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                      encoding="utf-8")
 
     def on_batch(done: int, total: int) -> None:
@@ -473,7 +615,11 @@ def _stage_translate(job: Job, cfg, tracker,
     mapping = translate.translate_all(client, utterances, system, tracker,
                                       on_batch=on_batch,
                                       load_checkpoint=load_ckpt,
-                                      save_checkpoint=save_ckpt)
+                                      save_checkpoint=save_ckpt,
+                                      glossary=glossary,
+                                      text_runner=text_runner)
+    (job.dir / "episode_glossary.json").write_text(
+        json.dumps(glossary, ensure_ascii=False, indent=2), encoding="utf-8")
     rows = [{**u.to_dict(), "id_text": mapping[u.id]} for u in utterances]
     out_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2),
                         encoding="utf-8")
@@ -494,33 +640,62 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
         return rows
 
     n = len(chunks)
+    timing_model = job.params.get("timing_model") or cfg.timing_model
     _emit(job, "timing", "start",
-          f"koreksi timing {len(rows)} ujaran via Gemini ({n} chunk)")
+          f"koreksi timing {len(rows)} ujaran via {timing_model} ({n} chunk)")
 
-    gemini = providers.GeminiClient(cfg.gemini_api_key, cfg.timing_model)
+    gemini = providers.make_audio_client(cfg, model=timing_model)
+    runner4 = _make_audio_runner(job, cfg, "timing", timing_model, primary_client=gemini)
     utterances = [transcribe.Utterance.from_dict(r) for r in rows]
-
-    context_md, members_md = _read_context(
-        job.params.get("group"), job.params.get("context_preset")
-    )
 
     def on_progress(chunk_idx: int, total: int) -> None:
         _emit(job, "timing", "progress", f"chunk {chunk_idx}/{total}")
 
+    def load_ckpt(chunk_idx: int):
+        p = job.dir / "chunks" / f"timing_{chunk_idx:03d}.json"
+        return _load_json_safe(p, None)
+
+    def save_ckpt(chunk_idx: int, payload: dict) -> None:
+        p = job.dir / "chunks" / f"timing_{chunk_idx:03d}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+
     corrected, report = timing.reanchor_all(
         utterances, chunks, job.dir / "chunks",
         gemini=gemini, tracker=tracker, on_progress=on_progress,
+        audio_runner=lambda p, s, u: runner4(p, s, u, None),
+        load_checkpoint=load_ckpt,
+        save_checkpoint=save_ckpt,
     )
 
-    corrected_by_id = {u.id: u for u in corrected}
+    corrected_by_id = {u.id: (c_idx, u) for c_idx, u in enumerate(corrected)}
+    matched_rows: dict[int, transcribe.Utterance] = {}
+    used_c_idxs: set[int] = set()
+    for r_idx, r in enumerate(rows):
+        hit = corrected_by_id.get(r["id"])
+        if hit is not None:
+            c_idx, u = hit
+            if u.ja == r.get("ja") and c_idx not in used_c_idxs:
+                matched_rows[r_idx] = u
+                used_c_idxs.add(c_idx)
+
+    remaining_by_ja: dict[str, deque[transcribe.Utterance]] = defaultdict(deque)
+    for c_idx, u in enumerate(corrected):
+        if c_idx not in used_c_idxs:
+            remaining_by_ja[u.ja].append(u)
+
     result = []
-    for r in rows:
-        u = corrected_by_id.get(r["id"])
-        if u:
+    for r_idx, r in enumerate(rows):
+        u = matched_rows.get(r_idx)
+        if u is None and remaining_by_ja[r.get("ja", "")]:
+            u = remaining_by_ja[r.get("ja", "")].popleft()
+        if u is not None:
             result.append({**r, "start": u.start, "end": u.end})
         else:
             result.append(r)
 
+    result.sort(key=lambda r: (float(r["start"]), float(r["end"])))
     timing.save_timing(result, report, job.dir)
 
     n_corrected = sum(1 for e in report if e.get("status") == "corrected")
@@ -535,15 +710,21 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
     qc_path = job.dir / "qc" / "utterances.json"
     if qc_path.exists():
         result = qc.load_qc(job.dir)
-        _emit(job, "qc", "done", f"{len(result)} ujaran (checkpoint)")
+        saved_report = _load_json_safe(job.dir / "qc" / "report.json", None, dict)
+        if saved_report is not None:
+            _emit(job, "qc", "done", f"{len(result)} ujaran (checkpoint)",
+                  result={"report": saved_report})
+        else:
+            _emit(job, "qc", "done", f"{len(result)} ujaran (checkpoint)")
         return result
 
-    if audio_path is None:
-        _emit(job, "qc", "done", "dilewati (tidak ada audio)")
-        return rows
-
-    _emit(job, "qc", "start",
-          f"QC {len(rows)} ujaran (batch={cfg.qc_batch_size}, window={cfg.qc_window_size})")
+    deep_audio_qc = bool(job.params.get("deep_audio_qc", False))
+    qc_model = job.params.get("qc_model") or cfg.qc_model
+    mode_label = (
+        "deep" if (deep_audio_qc and audio_path is not None)
+        else ("hybrid" if audio_path is not None else "text-only")
+    )
+    _emit(job, "qc", "start", f"QC {len(rows)} ujaran (mode={mode_label})")
 
     context_md, members_md = _read_context(
         job.params.get("group"), job.params.get("context_preset")
@@ -554,28 +735,77 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
 
     system = qc.build_qc_system(context_md, members_md,
                                 additional_context=additional_context)
-    gemini = providers.GeminiClient(cfg.gemini_api_key, cfg.qc_model)
 
-    n_batches = (len(rows) + cfg.qc_batch_size - 1) // cfg.qc_batch_size
+    glossary = _load_json_safe(job.dir / "episode_glossary.json", {}, dict)
+    timing_report = _load_json_safe(job.dir / "timing" / "report.json", [], list)
+    chunk_offsets = _load_json_safe(job.dir / "offsets.json", [], list)
+
+    translator = job.params.get("translator", "gemini")
+    text_client = providers.make_text_client(
+        cfg, translator,
+        model=job.params.get("translate_model") or None,
+    )
+    text_runner = _make_text_runner(job, cfg, "qc", primary_client=text_client)
+
+    audio_client = None
+    audio_runner_3 = None
+    if audio_path is not None:
+        audio_client = providers.make_audio_client(cfg, model=qc_model)
+        runner4 = _make_audio_runner(job, cfg, "qc", qc_model, primary_client=audio_client)
+        audio_runner_3 = lambda p, s, u: runner4(p, s, u, None)
 
     def on_batch(done: int, total: int) -> None:
-        _emit(job, "qc", "progress", f"batch {done}/{total}")
+        _emit(job, "qc", "progress", f"audio slice {done}/{total}")
 
-    fixed_rows, issues = qc.run_qc_all(
-        gemini, rows, audio_path, job.dir / "chunks" / "qc_tmp",
+    fixed_rows, report_or_issues = qc.run_qc_all(
+        audio_client, rows, audio_path, job.dir / "chunks" / "qc_tmp",
         system, tracker,
         batch_size=cfg.qc_batch_size,
         window_size=cfg.qc_window_size,
         on_batch=on_batch,
+        glossary=glossary,
+        timing_report=timing_report,
+        chunk_offsets=chunk_offsets,
+        cps_threshold=cfg.sub_cps_flag,
+        deep_audio_qc=deep_audio_qc,
+        text_runner=text_runner,
+        audio_runner=audio_runner_3,
+        checkpoint_dir=job.dir / "chunks",
     )
 
-    qc.save_qc(fixed_rows, issues, job.dir)
+    qc.save_qc(fixed_rows, report_or_issues, job.dir)
+    if isinstance(report_or_issues, dict):
+        summary = report_or_issues.get("summary") or {}
+        report_payload = report_or_issues
+    else:
+        issues_list = report_or_issues if isinstance(report_or_issues, list) else []
+        summary = {
+            "total_rows": len(fixed_rows),
+            "local_flags": 0,
+            "audio_slices_checked": 0,
+            "translation_fixes": sum(1 for i in issues_list if i.get("type") == "translation"),
+            "ja_fixes": sum(1 for i in issues_list if i.get("type") == "ja"),
+            "timing_fixes": sum(1 for i in issues_list if i.get("type") == "timing"),
+            "splits": sum(1 for i in issues_list if i.get("type") == "split"),
+            "unresolved_warnings": sum(
+                1 for i in issues_list if i.get("type") in {"warning", "audio_flag"}
+            ),
+        }
+        report_payload = {
+            "mode": "text_only" if audio_path is None else ("deep" if deep_audio_qc else "hybrid"),
+            "deep_audio_qc": deep_audio_qc,
+            "summary": summary,
+            "issues": issues_list,
+        }
 
-    translation_fixes = sum(1 for i in issues if i.get("type") == "translation")
-    timing_flags = sum(1 for i in issues if i.get("type") == "timing")
-    _emit(job, "qc", "done",
-          f"{translation_fixes} terjemahan diperbaiki, {timing_flags} timing diflag",
-          result={"issues": issues})
+    _emit(
+        job, "qc", "done",
+        f"{summary.get('translation_fixes', 0)} terjemahan, "
+        f"{summary.get('ja_fixes', 0)} JP, "
+        f"{summary.get('timing_fixes', 0)} timing, "
+        f"{summary.get('splits', 0)} split diperbaiki",
+        result={"report": report_payload},
+    )
     return fixed_rows
 
 
@@ -601,6 +831,8 @@ def _stage_format(job: Job, cfg, rows: list[dict]) -> list[str]:
         (job.dir / "result.srt").write_text(
             subtitle.render_srt(processed), encoding="utf-8")
         files.append("result.srt")
+    if (job.dir / "qc" / "report.json").exists():
+        files.append("qc_report.json")
     if (job.dir / "source.mp4").exists():
         files.append("source.mp4")
     _emit(job, "format", "done",

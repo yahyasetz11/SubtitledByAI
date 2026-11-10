@@ -57,6 +57,7 @@ def test_stage_format_transcript_json_only(tmp_path):
     job.id = "test-job-001"
     job.status = "running"
     job.error = None
+    job.failed_stage = None
     job.params = {"output_format": "json", "save_mp4": False}
     job.events = []
     utterances = [Utterance(id=1, start=0.0, end=2.0, type="dialogue", ja="\u30c6\u30b9\u30c8")]
@@ -74,6 +75,7 @@ def test_stage_format_transcript_ass(tmp_path, monkeypatch):
     job.id = "test-job-002"
     job.status = "running"
     job.error = None
+    job.failed_stage = None
     job.params = {"output_format": "ass", "save_mp4": False}
     job.events = []
     utterances = [Utterance(id=1, start=0.0, end=2.0, type="dialogue", ja="\u30c6\u30b9\u30c8")]
@@ -114,6 +116,7 @@ def test_stage_load_for_translation_from_job_id(tmp_path, monkeypatch):
     job.id = "new_job"
     job.status = "running"
     job.error = None
+    job.failed_stage = None
     job.params = {"source_job_id": "prior_job", "mode": "translation_only"}
     job.events = []
 
