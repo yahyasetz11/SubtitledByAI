@@ -204,6 +204,9 @@ def test_build_transcribe_prompts_caps_speakers():
     assert "1 pembicara" in user or "satu pembicara" in user.lower()
     assert "maksimal 2" in user.lower()
     assert "- " in user
+    assert "\\n- " in user
+    assert "3 pembicara" in user.lower()
+    assert "dilarang" in user.lower()
 
 
 def test_transcribe_chunk_uses_audio_runner_when_provided(tmp_path):
@@ -281,3 +284,60 @@ def test_transcribe_chunk_propagates_audio_runner_on_split(tmp_path, monkeypatch
         ("gemini-3.5-flash", 10, 5),
         ("gemini-3.5-flash", 10, 5),
     ]
+
+
+def test_transcribe_chunk_propagates_audio_runner_error(tmp_path, monkeypatch):
+    chunk = tmp_path / "chunk_001.mp3"
+    chunk.write_bytes(b"mp3")
+    tracker = FakeTracker()
+    split_calls = []
+
+    def fake_split(path):
+        split_calls.append(path)
+        return (path.with_name(path.stem + "_a.mp3"),
+                path.with_name(path.stem + "_b.mp3"), 60.0)
+
+    def failing_runner(path, system, user, on_upload_done):
+        raise RuntimeError("all models failed")
+
+    monkeypatch.setattr("app.transcribe.audio.split_audio", fake_split)
+    with pytest.raises(RuntimeError, match="all models failed"):
+        transcribe_chunk(
+            None, chunk, "sys", "usr", tracker,
+            audio_runner=failing_runner,
+        )
+    assert split_calls == []
+    assert tracker.calls == []
+
+
+def test_transcribe_chunk_cleans_up_split_files(tmp_path, monkeypatch):
+    chunk = tmp_path / "chunk_001.mp3"
+    chunk.write_bytes(b"mp3")
+    created_splits = []
+
+    def fake_split(path):
+        left = path.with_name(path.stem + "_a.mp3")
+        right = path.with_name(path.stem + "_b.mp3")
+        left.write_bytes(b"left")
+        right.write_bytes(b"right")
+        created_splits.extend([left, right])
+        return left, right, 420.0
+
+    monkeypatch.setattr("app.transcribe.audio.split_audio", fake_split)
+
+    truncated = LLMResponse(text=VALID, input_tokens=1, output_tokens=1,
+                            truncated=True)
+    gemini_ok = FakeGemini([truncated, HALF, HALF])
+    transcribe_chunk(gemini_ok, chunk, "sys", "user", FakeTracker())
+    assert len(created_splits) == 2
+    assert all(not p.exists() for p in created_splits)
+    assert chunk.exists()
+
+    created_splits.clear()
+    bad = LLMResponse(text="not json", input_tokens=1, output_tokens=1)
+    gemini_fail = FakeGemini([bad] * 7)
+    with pytest.raises(TranscriptParseError):
+        transcribe_chunk(gemini_fail, chunk, "sys", "user", FakeTracker())
+    assert len(created_splits) == 4
+    assert all(not p.exists() for p in created_splits)
+    assert chunk.exists()

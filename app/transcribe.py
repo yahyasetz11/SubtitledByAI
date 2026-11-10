@@ -184,10 +184,14 @@ def transcribe_chunk(gemini, chunk_path: Path, system: str, user: str,
         if depth >= MAX_SPLIT_DEPTH:
             raise
         left, right, offset = audio.split_audio(chunk_path)
-        first = transcribe_chunk(gemini, left, system, user, tracker, depth + 1,
-                                 audio_runner=audio_runner)
-        second = transcribe_chunk(gemini, right, system, user, tracker, depth + 1,
-                                  audio_runner=audio_runner)
+        try:
+            first = transcribe_chunk(gemini, left, system, user, tracker, depth + 1,
+                                     audio_runner=audio_runner)
+            second = transcribe_chunk(gemini, right, system, user, tracker, depth + 1,
+                                      audio_runner=audio_runner)
+        finally:
+            left.unlink(missing_ok=True)
+            right.unlink(missing_ok=True)
         shifted = [replace(u, start=u.start + offset, end=u.end + offset)
                    for u in second]
         combined = first + shifted
