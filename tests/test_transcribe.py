@@ -197,3 +197,87 @@ def test_transcribe_chunk_gives_up_after_max_depth(tmp_path, monkeypatch):
     with pytest.raises(TranscriptParseError):
         transcribe_chunk(gemini, tmp_path / "chunk_001.mp3",
                          "sys", "user", FakeTracker())
+
+
+def test_build_transcribe_prompts_caps_speakers():
+    _, user = build_transcribe_prompts("CTX", "MEMBERS")
+    assert "1 pembicara" in user or "satu pembicara" in user.lower()
+    assert "maksimal 2" in user.lower()
+    assert "- " in user
+
+
+def test_transcribe_chunk_uses_audio_runner_when_provided(tmp_path):
+    chunk = tmp_path / "chunk_001.mp3"
+    chunk.write_bytes(b"mp3")
+    tracker = FakeTracker()
+    runner_calls = []
+
+    def fake_runner(path, system, user, on_upload_done):
+        runner_calls.append(path)
+        if on_upload_done:
+            on_upload_done()
+        return GOOD, "gemini-3.5-flash"
+
+    utts = transcribe_chunk(
+        None, chunk, "sys", "usr", tracker,
+        audio_runner=fake_runner,
+    )
+    assert len(utts) == 2
+    assert runner_calls == [chunk]
+    assert tracker.calls == [("gemini-3.5-flash", 100, 50)]
+
+
+def test_transcribe_chunk_propagates_audio_runner_on_split(tmp_path, monkeypatch):
+    chunk = tmp_path / "chunk_001.mp3"
+    chunk.write_bytes(b"mp3")
+    truncated = LLMResponse(text=VALID, input_tokens=10, output_tokens=20,
+                            truncated=True)
+    responses = [
+        (truncated, "gemini-2.5-pro"),
+        (HALF, "gemini-3.5-flash"),
+        (HALF, "gemini-3.5-flash"),
+    ]
+    runner_calls = []
+
+    def fake_split(path):
+        return (path.with_name(path.stem + "_a.mp3"),
+                path.with_name(path.stem + "_b.mp3"), 420.0)
+
+    def fake_runner(path, system, user, on_upload_done):
+        runner_calls.append((path, system, user, on_upload_done))
+        if on_upload_done:
+            on_upload_done()
+        return responses.pop(0)
+
+    upload_done_calls = 0
+
+    def on_upload_done():
+        nonlocal upload_done_calls
+        upload_done_calls += 1
+
+    monkeypatch.setattr("app.transcribe.audio.split_audio", fake_split)
+    tracker = FakeTracker()
+    utts = transcribe_chunk(
+        None, chunk, "sys", "usr", tracker,
+        on_upload_done=on_upload_done,
+        audio_runner=fake_runner,
+    )
+    assert len(utts) == 2
+    assert [u.id for u in utts] == [1, 2]
+    assert utts[0].start == pytest.approx(1.0)
+    assert utts[1].start == pytest.approx(421.0)
+    assert [c[0] for c in runner_calls] == [
+        chunk,
+        tmp_path / "chunk_001_a.mp3",
+        tmp_path / "chunk_001_b.mp3",
+    ]
+    assert all(c[1] == "sys" and c[2] == "usr" for c in runner_calls)
+    assert runner_calls[0][3] is on_upload_done
+    assert runner_calls[1][3] is None
+    assert runner_calls[2][3] is None
+    assert upload_done_calls == 1
+    assert tracker.calls == [
+        ("gemini-2.5-pro", 10, 20),
+        ("gemini-3.5-flash", 10, 5),
+        ("gemini-3.5-flash", 10, 5),
+    ]

@@ -111,6 +111,9 @@ def build_transcribe_prompts(context_md: str, members_md: str,
         "- id mulai dari 1, berurutan.\n"
         "- start/end relatif terhadap awal audio INI (format MM:SS.mmm).\n"
         '- type "narration" untuk voice-over narator; selain itu "dialogue".\n'
+        "- Usahakan 1 pembicara per item. Jika ada sahut-sahutan sangat cepat atau tumpang-tindih, "
+        'gabungkan maksimal 2 pembicara dalam satu item dengan format dua baris diawali "- " '
+        '("- <pembicara 1>\\n- <pembicara 2>"). DILARANG menggabungkan 3 pembicara atau lebih dalam 1 item.\n'
         "- Abaikan backchannel pendek tanpa makna (うん/はい) kecuali jawaban penting.\n"
         "- Teks layar (telop) tidak ditranskripsikan kecuali dibacakan."
     )
@@ -159,15 +162,20 @@ MAX_SPLIT_DEPTH = 2
 
 def transcribe_chunk(gemini, chunk_path: Path, system: str, user: str,
                      tracker, depth: int = 0,
-                     on_upload_done=None) -> list[Utterance]:
+                     on_upload_done=None,
+                     audio_runner=None) -> list[Utterance]:
     """Transcribe one audio chunk; timestamps relative to the chunk start."""
-    audio_ref = gemini.upload_audio(chunk_path)
-    if on_upload_done is not None:
-        on_upload_done()
-    response = call_with_retries(
-        lambda: gemini.generate(system=system, user=user, audio=audio_ref))
+    if audio_runner is not None:
+        response, model_used = audio_runner(chunk_path, system, user, on_upload_done)
+    else:
+        audio_ref = gemini.upload_audio(chunk_path)
+        if on_upload_done is not None:
+            on_upload_done()
+        response = call_with_retries(
+            lambda: gemini.generate(system=system, user=user, audio=audio_ref))
+        model_used = gemini.model
     if tracker is not None:
-        tracker.add(gemini.model, response.input_tokens, response.output_tokens)
+        tracker.add(model_used, response.input_tokens, response.output_tokens)
     try:
         if response.truncated:
             raise TranscriptParseError("output terpotong (MAX_TOKENS)")
@@ -176,8 +184,10 @@ def transcribe_chunk(gemini, chunk_path: Path, system: str, user: str,
         if depth >= MAX_SPLIT_DEPTH:
             raise
         left, right, offset = audio.split_audio(chunk_path)
-        first = transcribe_chunk(gemini, left, system, user, tracker, depth + 1)
-        second = transcribe_chunk(gemini, right, system, user, tracker, depth + 1)
+        first = transcribe_chunk(gemini, left, system, user, tracker, depth + 1,
+                                 audio_runner=audio_runner)
+        second = transcribe_chunk(gemini, right, system, user, tracker, depth + 1,
+                                  audio_runner=audio_runner)
         shifted = [replace(u, start=u.start + offset, end=u.end + offset)
                    for u in second]
         combined = first + shifted
