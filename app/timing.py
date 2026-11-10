@@ -81,13 +81,12 @@ def correct_chunk_timing(
     utterances: list[Utterance],
     chunk_start: float,
     tracker,
+    audio_runner=None,
 ) -> tuple[list[Utterance], bool]:
     """Send chunk audio + current timestamps to Gemini; get corrected timestamps back.
 
-    Utterances have absolute timestamps. chunk_start is subtracted before sending
-    (so Gemini sees timestamps relative to the chunk audio), then re-added after.
-
-    Returns (corrected_utterances, success). success=False keeps original timestamps.
+    Raises API/transport failures (after fallback exhaustion in audio_runner).
+    Returns (utterances, False) only on malformed JSON / ID mismatch.
     """
     rel_utts = [replace(u, start=round(u.start - chunk_start, 3),
                         end=round(u.end - chunk_start, 3))
@@ -96,30 +95,31 @@ def correct_chunk_timing(
     expected_ids = [u.id for u in rel_utts]
     user = build_timing_user_prompt(rel_utts)
 
-    try:
+    if audio_runner is not None:
+        response, model_used = audio_runner(chunk_path, "", user)
+    else:
         audio_ref = gemini.upload_audio(chunk_path)
         response = call_with_retries(
             lambda: gemini.generate(system="", user=user, audio=audio_ref)
         )
-        if tracker is not None:
-            tracker.add(gemini.model, response.input_tokens, response.output_tokens)
+        model_used = gemini.model
 
-        corrected_map = parse_timing_response(response.text, expected_ids)
-        if corrected_map is None:
-            return utterances, False
+    if tracker is not None:
+        tracker.add(model_used, response.input_tokens, response.output_tokens)
 
-        result: list[Utterance] = []
-        for u in utterances:
-            rel_start, rel_end = corrected_map[u.id]
-            result.append(replace(
-                u,
-                start=round(chunk_start + rel_start, 3),
-                end=round(chunk_start + rel_end, 3),
-            ))
-        return result, True
-
-    except Exception:
+    corrected_map = parse_timing_response(response.text, expected_ids)
+    if corrected_map is None:
         return utterances, False
+
+    result: list[Utterance] = []
+    for u in utterances:
+        rel_start, rel_end = corrected_map[u.id]
+        result.append(replace(
+            u,
+            start=round(chunk_start + rel_start, 3),
+            end=round(chunk_start + rel_end, 3),
+        ))
+    return result, True
 
 
 def reanchor_all(
@@ -129,11 +129,11 @@ def reanchor_all(
     gemini,
     tracker,
     on_progress=None,
+    audio_runner=None,
+    load_checkpoint=None,
+    save_checkpoint=None,
 ) -> tuple[list[Utterance], list[dict]]:
-    """Re-anchor all utterances by re-sending each chunk to Gemini.
-
-    Returns (corrected_utterances, report).
-    """
+    """Re-anchor all utterances by re-sending each chunk to Gemini."""
     chunk_map: dict[int, list[Utterance]] = {c.index: [] for c in chunks}
     for u in utterances:
         for chunk in chunks:
@@ -146,31 +146,58 @@ def reanchor_all(
     n = len(chunks)
 
     for chunk in chunks:
+        ckpt = load_checkpoint(chunk.index) if load_checkpoint else None
+        if ckpt is not None:
+            loaded_utts = [Utterance.from_dict(d) for d in ckpt.get("utterances", [])]
+            result.extend(loaded_utts)
+            if ckpt.get("report_entry"):
+                report.append(ckpt["report_entry"])
+            if on_progress:
+                on_progress(chunk.index, n)
+            continue
+
         chunk_utts = chunk_map[chunk.index]
         if not chunk_utts:
-            report.append({"chunk": chunk.index, "status": "skipped", "reason": "no_utterances"})
+            entry = {"chunk": chunk.index, "status": "skipped", "reason": "no_utterances"}
+            report.append(entry)
+            if save_checkpoint:
+                save_checkpoint(chunk.index, {"utterances": [], "report_entry": entry})
             if on_progress:
                 on_progress(chunk.index, n)
             continue
 
         chunk_path = chunks_dir / f"chunk_{chunk.index:03d}.mp3"
         if not chunk_path.exists():
-            report.append({"chunk": chunk.index, "status": "fallback", "reason": "chunk_file_missing"})
+            entry = {"chunk": chunk.index, "status": "fallback", "reason": "chunk_file_missing"}
+            report.append(entry)
             result.extend(chunk_utts)
+            if save_checkpoint:
+                save_checkpoint(chunk.index, {
+                    "utterances": [u.to_dict() for u in chunk_utts],
+                    "report_entry": entry,
+                })
             if on_progress:
                 on_progress(chunk.index, n)
             continue
 
         corrected, success = correct_chunk_timing(
-            gemini, chunk_path, chunk_utts, chunk.start, tracker
+            gemini, chunk_path, chunk_utts, chunk.start, tracker,
+            audio_runner=audio_runner,
         )
 
         if success:
-            report.append({"chunk": chunk.index, "status": "corrected", "count": len(corrected)})
+            entry = {"chunk": chunk.index, "status": "corrected", "count": len(corrected)}
         else:
-            report.append({"chunk": chunk.index, "status": "fallback", "reason": "gemini_parse_error"})
-
+            entry = {"chunk": chunk.index, "status": "fallback", "reason": "gemini_parse_error"}
+        report.append(entry)
         result.extend(corrected)
+
+        if save_checkpoint:
+            save_checkpoint(chunk.index, {
+                "utterances": [u.to_dict() for u in corrected],
+                "report_entry": entry,
+            })
+
         if on_progress:
             on_progress(chunk.index, n)
 
