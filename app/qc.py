@@ -14,6 +14,117 @@ _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
 
 AUDIO_BUFFER_SECONDS = 1.5
 
+_JP_KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
+_PRONOUN_RE = re.compile(r"\b(saya|anda|gue|lo)\b", re.IGNORECASE)
+_SPACE_RE = re.compile(r"\s+")
+
+ACOUSTIC_FLAG_REASONS = {
+    "timing_fallback",
+    "in_silence",
+    "overlap",
+    "rate_outlier",
+    "speaker_overflow",
+}
+
+
+def _chunk_field(chunk, key: str):
+    return chunk[key] if isinstance(chunk, dict) else getattr(chunk, key)
+
+
+def _is_in_silence(start: float, end: float, silences: list) -> bool:
+    dur = end - start
+    if dur < 0.7:
+        return False
+    for s in silences:
+        if s.start <= start + 0.05 and end <= s.end + 0.05:
+            return True
+    return False
+
+
+def audit_local(
+    rows: list[dict],
+    *,
+    audio_path: Path | None = None,
+    timing_report: list[dict] | None = None,
+    chunk_offsets: list[dict] | None = None,
+    cps_threshold: float = 25.0,
+) -> dict[int, list[str]]:
+    """Free deterministic QC audit. Returns {row_id: [reason_codes]}."""
+    flags: dict[int, list[str]] = {}
+
+    def _flag(row_id: int, code: str) -> None:
+        lst = flags.setdefault(row_id, [])
+        if code not in lst:
+            lst.append(code)
+
+    # 1. Identify utterances belonging to timing fallback chunks
+    fallback_chunks = {
+        e["chunk"]
+        for e in (timing_report or [])
+        if e.get("status") == "fallback" and "chunk" in e
+    }
+    if fallback_chunks and chunk_offsets:
+        first_start = float(_chunk_field(chunk_offsets[0], "start"))
+        first_index = _chunk_field(chunk_offsets[0], "index")
+        for row in rows:
+            rstart = float(row["start"])
+            if rstart < first_start:
+                if first_index in fallback_chunks:
+                    _flag(int(row["id"]), "timing_fallback")
+                continue
+            for idx, ch in enumerate(chunk_offsets):
+                cstart = float(_chunk_field(ch, "start"))
+                cend = float(_chunk_field(ch, "end"))
+                if cstart <= rstart < cend or idx == len(chunk_offsets) - 1:
+                    if _chunk_field(ch, "index") in fallback_chunks:
+                        _flag(int(row["id"]), "timing_fallback")
+                    break
+
+    # 2. Acoustic silence check (only when audio_path is available)
+    silences = []
+    if audio_path is not None and audio_path.exists():
+        try:
+            silences = audio.detect_silences(audio_path, -30)
+        except Exception:
+            silences = []
+
+    prev_end: float | None = None
+    for row in rows:
+        rid = int(row["id"])
+        start = float(row["start"])
+        end = float(row["end"])
+        dur = max(0.01, end - start)
+        ja = str(row.get("ja", ""))
+        id_text = str(row.get("id_text", ""))
+
+        if silences and _is_in_silence(start, end, silences):
+            _flag(rid, "in_silence")
+
+        if prev_end is not None and prev_end > start + 0.05:
+            _flag(rid, "overlap")
+        prev_end = max(prev_end, end) if prev_end is not None else end
+
+        ja_compact = _SPACE_RE.sub("", ja)
+        jp_rate = len(ja_compact) / dur
+        if (dur >= 0.4 and jp_rate > 18.0) or (dur > 3.0 and jp_rate < 1.2):
+            _flag(rid, "rate_outlier")
+
+        ja_turns = sum(1 for ln in ja.splitlines() if ln.lstrip().startswith("- "))
+        id_turns = sum(1 for ln in id_text.splitlines() if ln.lstrip().startswith("- "))
+        if ja_turns >= 3 or id_turns >= 3:
+            _flag(rid, "speaker_overflow")
+
+        if _JP_KANA_RE.search(id_text):
+            _flag(rid, "untranslated_jp")
+
+        if len(id_text.strip()) / dur > cps_threshold:
+            _flag(rid, "high_cps")
+
+        if _PRONOUN_RE.search(id_text):
+            _flag(rid, "pronoun_violation")
+
+    return flags
+
 
 def slice_audio_for_batch(
     audio_path: Path,
