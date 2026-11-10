@@ -60,7 +60,7 @@ def test_index_contains_fallback_retry_and_qc_elements(client):
         "afb-model-1",
         "afb-key-3",
         "afb-model-3",
-        "translate-fallback-rows",
+        "tl-fallback-rows",
         "tfb-prov-1",
         "tfb-key-1",
         "tfb-model-1",

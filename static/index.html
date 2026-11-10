@@ -255,6 +255,8 @@ input[type=file]:hover {
 }
 .fallback-row select {
   flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 11px;
   font-size: .84rem;
 }
@@ -994,7 +996,7 @@ textarea:focus {
       <details class="field mode-full mode-tl fallback-details" id="translate-fallback-details">
         <summary>Translation Fallback (opsional, maks 3 slot)</summary>
         <p class="fallback-hint">Dipakai berurutan jika provider/model utama gagal pada tahap Translasi atau Text QC.</p>
-        <div id="translate-fallback-rows" class="fallback-rows">
+        <div id="tl-fallback-rows" class="fallback-rows">
           <div class="fallback-row">
             <span class="fallback-slot-lbl">Slot 1</span>
             <select id="tfb-prov-1" aria-label="Translation Fallback Slot 1 Provider"><option value="">— Tidak aktif —</option></select>
@@ -1285,15 +1287,20 @@ async function showRetryBox(stage) {
   if (!retryBox) return;
 
   if (!currentJobParams && jobId) {
+    const capturedJobId = jobId;
     try {
-      const jr = await fetch("/api/jobs/" + jobId);
+      const jr = await fetch("/api/jobs/" + capturedJobId);
+      if (jobId !== capturedJobId) return;
       if (jr.ok) {
         const jdata = await jr.json();
+        if (jobId !== capturedJobId) return;
         currentJobParams = jdata.params || {};
         currentJobMode = (jdata.params && jdata.params.mode) || "full";
         if (jdata.failed_stage) currentJobParams._failed_stage = jdata.failed_stage;
       }
-    } catch (_) {}
+    } catch (_) {
+      if (jobId !== capturedJobId) return;
+    }
   }
 
   const params = currentJobParams || {};
@@ -1345,10 +1352,14 @@ async function showRetryBox(stage) {
       const chosenProv = ($("retry-translator") && $("retry-translator").value) || activeProv;
       const tlModels = (globalConfig.models.translation && globalConfig.models.translation[chosenProv]) || [];
       const tlDef = (globalConfig.models.defaults && globalConfig.models.defaults.translation && globalConfig.models.defaults.translation[chosenProv]) || "";
+      const formProv = $("translator") && $("translator").value;
+      const fallbackTlModel = chosenProv === formProv
+        ? (($("translate_model") && $("translate_model").value) || tlDef)
+        : tlDef;
       populateSelect(
         $("retry-translate-model"),
         tlModels,
-        params.translate_model || ($("translate_model") && $("translate_model").value) || tlDef
+        params.translate_model || fallbackTlModel
       );
       activeProv = chosenProv;
     }
@@ -1636,6 +1647,7 @@ function logLine(stage, status, msg) {
 
 // ── Reset & finish ───────────────────────────────────────────────
 function resetProgress() {
+  if (es) { es.close(); es = null; }
   lastFailedStage = null;
   lastQcReport = null;
   document.querySelector(".app").classList.add("wide");
@@ -2029,7 +2041,18 @@ $("job-form").addEventListener("submit", async e => {
     alert(err.detail || "Gagal membuat job (HTTP " + resp.status + ")");
     return;
   }
-  jobId = (await resp.json()).job_id;
+  let jobData;
+  try {
+    jobData = await resp.json();
+  } catch (err) {
+    alert("Respons server tidak valid: " + err);
+    return;
+  }
+  if (!jobData || !jobData.job_id) {
+    alert("Respons server tidak menyertakan job_id.");
+    return;
+  }
+  jobId = jobData.job_id;
   currentJobMode = currentMode;
   currentJobParams = {
     mode: currentMode,
@@ -2110,35 +2133,39 @@ $("retry-btn").addEventListener("click", async () => {
     return;
   }
 
-  // Sync main form controls & currentJobParams with applied overrides
+  // Sync global active key & main form controls (when mode matches) + currentJobParams
   if (payload.gemini_key_label) {
     if ($("gemini-key-sel")) $("gemini-key-sel").value = payload.gemini_key_label;
     if (globalConfig) globalConfig.active_gemini_key = payload.gemini_key_label;
   }
-  if (payload.transcribe_model && $("transcribe_model")) {
-    $("transcribe_model").value = payload.transcribe_model;
-  }
-  if (payload.timing_model && $("timing_model")) {
-    $("timing_model").value = payload.timing_model;
-  }
-  if (payload.translator && $("translator")) {
-    const prevProv = $("translator").value;
-    $("translator").value = payload.translator;
-    if (prevProv !== payload.translator && globalConfig && globalConfig.models) {
-      populateTranslateModelDropdown(globalConfig.models, payload.translator);
+  if (!currentJobMode || currentMode === currentJobMode) {
+    if (payload.transcribe_model && $("transcribe_model")) {
+      $("transcribe_model").value = payload.transcribe_model;
+    }
+    if (payload.timing_model && $("timing_model")) {
+      $("timing_model").value = payload.timing_model;
+    }
+    if (payload.translator && $("translator")) {
+      const prevProv = $("translator").value;
+      $("translator").value = payload.translator;
+      if (prevProv !== payload.translator && globalConfig && globalConfig.models) {
+        populateTranslateModelDropdown(globalConfig.models, payload.translator);
+      }
+    }
+    if (payload.translate_model && $("translate_model")) {
+      $("translate_model").value = payload.translate_model;
+    }
+    if (payload.qc_model && $("qc_model")) {
+      $("qc_model").value = payload.qc_model;
+    }
+    if (typeof payload.deep_audio_qc === "boolean" && $("deep_audio_qc")) {
+      $("deep_audio_qc").checked = payload.deep_audio_qc;
     }
   }
-  if (payload.translate_model && $("translate_model")) {
-    $("translate_model").value = payload.translate_model;
+  if (currentJobParams) {
+    delete currentJobParams._failed_stage;
+    Object.assign(currentJobParams, payload);
   }
-  if (payload.qc_model && $("qc_model")) {
-    $("qc_model").value = payload.qc_model;
-  }
-  if (typeof payload.deep_audio_qc === "boolean" && $("deep_audio_qc")) {
-    $("deep_audio_qc").checked = payload.deep_audio_qc;
-  }
-  if (!currentJobParams) currentJobParams = {};
-  Object.assign(currentJobParams, payload);
 
   const summaryParts = [];
   if (payload.translator) summaryParts.push("provider: " + payload.translator);
@@ -2357,13 +2384,28 @@ $("ctx-toggle").addEventListener("click", () => {
 });
 
 $("gemini-key-sel").addEventListener("change", async () => {
-  const label = $("gemini-key-sel").value;
+  const sel = $("gemini-key-sel");
+  const label = sel.value;
+  const prevKey = globalConfig ? globalConfig.active_gemini_key : null;
   if (globalConfig) globalConfig.active_gemini_key = label;
-  await fetch("/api/config/active-key", {
-    method: "PUT",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({label}),
-  });
+  const revert = (msg) => {
+    if (prevKey !== null && prevKey !== undefined) sel.value = prevKey;
+    if (globalConfig) globalConfig.active_gemini_key = prevKey;
+    alert(msg);
+  };
+  try {
+    const resp = await fetch("/api/config/active-key", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({label}),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      revert(err.detail || "Gagal mengganti Gemini API key (HTTP " + resp.status + ")");
+    }
+  } catch (err) {
+    revert("Gagal menghubungi server: " + err);
+  }
 });
 
 // ── Mode Switcher ────────────────────────────────────────────────
