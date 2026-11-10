@@ -566,3 +566,300 @@ def test_make_text_client_delegates_openai_and_anthropic():
     with patch("app.providers.AnthropicClient") as MockAnt:
         make_text_client(cfg, "anthropic", model="claude-haiku-4-5")
         MockAnt.assert_called_once_with("akey", "claude-haiku-4-5")
+
+
+from app.providers import (
+    AudioFallbackSlot,
+    TranslateFallbackSlot,
+    execute_audio_with_fallback,
+    execute_with_fallback,
+)
+
+
+def test_execute_with_fallback_steps_slots_on_503():
+    attempts = []
+    fallbacks_logged = []
+
+    class FakeTextClient:
+        def __init__(self, label, exc=None):
+            self.model = label
+            self._exc = exc
+
+        def generate(self, system, user, audio=None):
+            attempts.append(self.model)
+            if self._exc:
+                raise self._exc
+            return LLMResponse(text='[{"id": 1, "id_text": "ok"}]', input_tokens=10, output_tokens=5)
+
+    clients = {
+        ("gemini", "Default", "primary-m"): FakeTextClient("primary-m", FakeHTTPError(503)),
+        ("gemini", "ALT", "slot1-m"): FakeTextClient("slot1-m", FakeHTTPError(429)),
+        ("openai", None, "gpt-4o"): FakeTextClient("gpt-4o", None),
+    }
+
+    primary = TranslateFallbackSlot(provider="gemini", key_label="Default", model="primary-m")
+    slots = [
+        TranslateFallbackSlot(provider="gemini", key_label="ALT", model="slot1-m"),
+        TranslateFallbackSlot(provider="openai", key_label=None, model="gpt-4o"),
+    ]
+
+    resp, used_client = execute_with_fallback(
+        primary=primary,
+        fallback_slots=slots,
+        build_client=lambda s: clients[(s.provider, s.key_label, s.model)],
+        call_fn=lambda c: c.generate("sys", "usr"),
+        on_fallback=lambda idx, slot, exc: fallbacks_logged.append((idx, slot.model, exc.status_code)),
+        sleep=lambda _: None,
+    )
+    assert used_client.model == "gpt-4o"
+    assert "ok" in resp.text
+    assert attempts == ["primary-m", "primary-m", "slot1-m", "slot1-m", "gpt-4o"]
+    assert fallbacks_logged == [(1, "slot1-m", 503), (2, "gpt-4o", 429)]
+
+
+def test_execute_with_fallback_steps_on_403_but_stops_on_400():
+    attempts = []
+
+    class FakeClient:
+        def __init__(self, model, status):
+            self.model = model
+            self._status = status
+
+        def generate(self, system, user, audio=None):
+            attempts.append(self.model)
+            raise FakeHTTPError(self._status)
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slot1 = AudioFallbackSlot(key_label="ALT", model="m1")
+
+    with pytest.raises(FakeHTTPError) as exc_info:
+        execute_with_fallback(
+            primary=primary,
+            fallback_slots=[slot1],
+            build_client=lambda s: FakeClient(s.model, 403 if s.model == "m0" else 400),
+            call_fn=lambda c: c.generate("s", "u"),
+            sleep=lambda _: None,
+        )
+    assert exc_info.value.status_code == 400
+    assert attempts == ["m0", "m1"]
+
+
+def test_execute_with_fallback_caps_at_three_slots_and_raises_last_error():
+    built = []
+
+    class FakeClient:
+        def __init__(self, model):
+            self.model = model
+
+        def generate(self, system, user, audio=None):
+            raise FakeHTTPError(503)
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slots = [
+        AudioFallbackSlot(key_label="K1", model="m1"),
+        AudioFallbackSlot(key_label="K2", model="m2"),
+        AudioFallbackSlot(key_label="K3", model="m3"),
+        AudioFallbackSlot(key_label="K4", model="m4"),
+    ]
+
+    def build(s):
+        built.append(s.model)
+        return FakeClient(s.model)
+
+    with pytest.raises(FakeHTTPError) as exc_info:
+        execute_with_fallback(
+            primary=primary,
+            fallback_slots=slots,
+            build_client=build,
+            call_fn=lambda c: c.generate("s", "u"),
+            sleep=lambda _: None,
+        )
+    assert exc_info.value.status_code == 503
+    assert built == ["m0", "m1", "m2", "m3"]
+
+
+def test_execute_with_fallback_stops_immediately_on_primary_400_and_retries_network_error():
+    built = []
+
+    class BadClient:
+        model = "m0"
+
+        def generate(self, system, user, audio=None):
+            raise FakeHTTPError(400)
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slot1 = AudioFallbackSlot(key_label="ALT", model="m1")
+
+    with pytest.raises(FakeHTTPError):
+        execute_with_fallback(
+            primary=primary,
+            fallback_slots=[slot1],
+            build_client=lambda s: (built.append(s.model), BadClient())[1],
+            call_fn=lambda c: c.generate("s", "u"),
+            sleep=lambda _: None,
+        )
+    assert built == ["m0"]
+
+    attempts = []
+
+    class NetClient:
+        def __init__(self, model, fail_with=None):
+            self.model = model
+            self._fail_with = fail_with
+
+        def generate(self, system, user, audio=None):
+            attempts.append(self.model)
+            if self._fail_with:
+                raise self._fail_with
+            return LLMResponse(text="ok", input_tokens=1, output_tokens=1)
+
+    resp, winner = execute_with_fallback(
+        primary=primary,
+        fallback_slots=[slot1],
+        build_client=lambda s: NetClient(s.model, ConnectionError("reset") if s.model == "m0" else None),
+        call_fn=lambda c: c.generate("s", "u"),
+        sleep=lambda _: None,
+    )
+    assert resp.text == "ok"
+    assert winner.model == "m1"
+    assert attempts == ["m0", "m0", "m1"]
+
+
+def test_execute_audio_with_fallback_reuploads_only_when_key_changes(tmp_path):
+    uploads = []
+    calls = []
+    upload_done_count = 0
+    chunk = tmp_path / "chunk_001.mp3"
+    chunk.write_bytes(b"mp3")
+
+    class FakeAudioClient:
+        def __init__(self, api_key, model):
+            self.api_key = api_key
+            self.model = model
+
+        def upload_audio(self, path):
+            uploads.append((self.api_key, path))
+            return f"ref:{self.api_key}"
+
+        def generate(self, system, user, audio=None):
+            calls.append((self.api_key, self.model, audio))
+            if self.model == "m-primary":
+                raise FakeHTTPError(503)
+            if self.model == "m-slot1":
+                raise FakeHTTPError(503)
+            return LLMResponse(text="ok", input_tokens=5, output_tokens=3)
+
+    primary = AudioFallbackSlot(key_label="Default", model="m-primary")
+    slots = [
+        AudioFallbackSlot(key_label="Default", model="m-slot1"),  # same key -> reuse upload
+        AudioFallbackSlot(key_label="ALT", model="m-slot2"),      # new key -> re-upload
+    ]
+    key_map = {"Default": "k1", "ALT": "k2"}
+
+    def on_up():
+        nonlocal upload_done_count
+        upload_done_count += 1
+
+    resp, used_client = execute_audio_with_fallback(
+        chunk_path=chunk,
+        primary=primary,
+        fallback_slots=slots,
+        build_client=lambda s: FakeAudioClient(key_map[s.key_label], s.model),
+        resolve_key=lambda s: key_map[s.key_label],
+        call_fn=lambda c, ref: c.generate("sys", "usr", audio=ref),
+        on_upload_done=on_up,
+        sleep=lambda _: None,
+    )
+    assert used_client.model == "m-slot2"
+    assert resp.text == "ok"
+    assert uploads == [("k1", chunk), ("k2", chunk)]
+    assert upload_done_count == 2
+    assert calls[0][2] == "ref:k1"
+    assert calls[2][2] == "ref:k1"  # slot 1 reused k1 upload
+    assert calls[4][2] == "ref:k2"  # slot 2 uploaded under k2
+
+
+def test_execute_audio_with_fallback_retries_upload_failure_and_steps_on_403(tmp_path):
+    uploads = []
+    chunk = tmp_path / "chunk_002.mp3"
+    chunk.write_bytes(b"mp3")
+
+    class FakeAudioClient:
+        def __init__(self, api_key, model):
+            self.api_key = api_key
+            self.model = model
+
+        def upload_audio(self, path):
+            uploads.append((self.api_key, self.model))
+            if self.api_key == "k1":
+                raise FakeHTTPError(403)
+            return f"ref:{self.api_key}"
+
+        def generate(self, system, user, audio=None):
+            return LLMResponse(text=f"done:{audio}", input_tokens=2, output_tokens=1)
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slots = [AudioFallbackSlot(key_label="ALT", model="m1")]
+    key_map = {"Default": "k1", "ALT": "k2"}
+
+    resp, winner = execute_audio_with_fallback(
+        chunk_path=chunk,
+        primary=primary,
+        fallback_slots=slots,
+        build_client=lambda s: FakeAudioClient(key_map[s.key_label], s.model),
+        resolve_key=lambda s: key_map[s.key_label],
+        call_fn=lambda c, ref: c.generate("sys", "usr", audio=ref),
+        sleep=lambda _: None,
+    )
+    assert winner.model == "m1"
+    assert resp.text == "done:ref:k2"
+    assert uploads == [("k1", "m0"), ("k2", "m1")]
+
+
+def test_execute_audio_with_fallback_retries_transient_upload_503_and_validates_attempts(tmp_path):
+    chunk = tmp_path / "chunk_003.mp3"
+    chunk.write_bytes(b"mp3")
+    upload_attempts = 0
+    upload_done = 0
+
+    class FlakyUploadClient:
+        model = "m0"
+
+        def upload_audio(self, path):
+            nonlocal upload_attempts
+            upload_attempts += 1
+            if upload_attempts == 1:
+                raise FakeHTTPError(503)
+            return "ref:k1"
+
+        def generate(self, system, user, audio=None):
+            return LLMResponse(text=f"ok:{audio}", input_tokens=1, output_tokens=1)
+
+    def on_up():
+        nonlocal upload_done
+        upload_done += 1
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    resp, _ = execute_audio_with_fallback(
+        chunk_path=chunk,
+        primary=primary,
+        fallback_slots=[],
+        build_client=lambda s: FlakyUploadClient(),
+        resolve_key=lambda s: "k1",
+        call_fn=lambda c, ref: c.generate("s", "u", audio=ref),
+        on_upload_done=on_up,
+        sleep=lambda _: None,
+    )
+    assert resp.text == "ok:ref:k1"
+    assert upload_attempts == 2
+    assert upload_done == 1
+
+    with pytest.raises(ValueError, match="attempts_per_slot"):
+        execute_with_fallback(
+            primary=primary,
+            fallback_slots=[],
+            build_client=lambda s: FlakyUploadClient(),
+            call_fn=lambda c: c.generate("s", "u"),
+            attempts_per_slot=0,
+            sleep=lambda _: None,
+        )

@@ -167,6 +167,7 @@ class Config:
 
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+FALLBACK_TRIGGER_STATUS = RETRYABLE_STATUS | {403}
 NETWORK_ERRORS = (ConnectionError, TimeoutError, httpx.TransportError)
 
 
@@ -447,3 +448,121 @@ def make_text_client(
         api_key = resolve_gemini_key(label, fallback_key=cfg.gemini_api_key)
         return GeminiClient(api_key, model or cfg.translate_models["gemini"])
     return make_translator(cfg, provider, model=model)
+
+
+@dataclass(frozen=True)
+class AudioFallbackSlot:
+    key_label: str
+    model: str
+
+
+@dataclass(frozen=True)
+class TranslateFallbackSlot:
+    provider: str
+    model: str
+    key_label: str | None = None
+
+
+def _is_fallback_trigger(exc: Exception) -> bool:
+    status = _status_of(exc)
+    return status in FALLBACK_TRIGGER_STATUS or isinstance(exc, NETWORK_ERRORS)
+
+
+def _execute_slot_chain(
+    *,
+    primary,
+    fallback_slots: list,
+    build_client,
+    invoke_slot,
+    attempts_per_slot: int,
+    base_delay: float,
+    on_fallback,
+    sleep,
+):
+    if attempts_per_slot < 1:
+        raise ValueError("attempts_per_slot must be >= 1")
+    chain = [primary, *(fallback_slots or ())[:3]]
+    last_exc: Exception | None = None
+    for idx, slot in enumerate(chain):
+        if idx > 0 and on_fallback is not None:
+            on_fallback(idx, slot, last_exc)
+        client = build_client(slot)
+        try:
+            result = call_with_retries(
+                lambda c=client, s=slot: invoke_slot(c, s),
+                attempts=attempts_per_slot,
+                base_delay=base_delay,
+                sleep=sleep,
+            )
+            return result, client
+        except Exception as exc:
+            last_exc = exc
+            if not _is_fallback_trigger(exc) or idx == len(chain) - 1:
+                raise
+    assert last_exc is not None
+    raise last_exc
+
+
+def execute_with_fallback(
+    *,
+    primary,
+    fallback_slots: list,
+    build_client,
+    call_fn,
+    attempts_per_slot: int = 2,
+    base_delay: float = 2.0,
+    on_fallback=None,
+    sleep=time.sleep,
+):
+    """Run call_fn on primary, stepping through up to 3 fallback slots on busy/network errors.
+
+    Returns (result, winning_client). Raises immediately on non-fallback errors (e.g. 400),
+    or re-raises the final error once all slots are exhausted.
+    """
+    return _execute_slot_chain(
+        primary=primary,
+        fallback_slots=fallback_slots,
+        build_client=build_client,
+        invoke_slot=lambda client, _slot: call_fn(client),
+        attempts_per_slot=attempts_per_slot,
+        base_delay=base_delay,
+        on_fallback=on_fallback,
+        sleep=sleep,
+    )
+
+
+def execute_audio_with_fallback(
+    *,
+    chunk_path: Path,
+    primary: AudioFallbackSlot,
+    fallback_slots: list[AudioFallbackSlot],
+    build_client,
+    resolve_key,
+    call_fn,
+    attempts_per_slot: int = 2,
+    base_delay: float = 2.0,
+    on_upload_done=None,
+    on_fallback=None,
+    sleep=time.sleep,
+):
+    """Like execute_with_fallback, caching Gemini Files API uploads per resolved API key."""
+    upload_cache: dict[str, object] = {}
+
+    def _run_for_client(client, slot: AudioFallbackSlot):
+        api_key = resolve_key(slot)
+        if api_key not in upload_cache:
+            upload_cache[api_key] = client.upload_audio(chunk_path)
+            if on_upload_done is not None:
+                on_upload_done()
+        return call_fn(client, upload_cache[api_key])
+
+    return _execute_slot_chain(
+        primary=primary,
+        fallback_slots=fallback_slots,
+        build_client=build_client,
+        invoke_slot=_run_for_client,
+        attempts_per_slot=attempts_per_slot,
+        base_delay=base_delay,
+        on_fallback=on_fallback,
+        sleep=sleep,
+    )
