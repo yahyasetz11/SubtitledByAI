@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -174,6 +175,13 @@ def _parse_fallback_json(raw: str, field_name: str) -> list[dict]:
     return parsed
 
 
+def _opt_str(slot: dict, field: str, prefix: str) -> str:
+    raw = slot.get(field)
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(422, f"{prefix}.{field} harus berupa string.")
+    return (raw or "").strip()
+
+
 def _validate_audio_fallback(raw_slots: list[dict], models_cfg: dict) -> list[dict]:
     if not isinstance(raw_slots, list):
         raise HTTPException(422, "audio_fallback harus berupa list.")
@@ -185,14 +193,8 @@ def _validate_audio_fallback(raw_slots: list[dict], models_cfg: dict) -> list[di
     for slot in raw_slots:
         if not isinstance(slot, dict):
             raise HTTPException(422, "audio_fallback slot harus berupa object.")
-        raw_k = slot.get("key_label")
-        raw_m = slot.get("model")
-        if raw_k is not None and not isinstance(raw_k, str):
-            raise HTTPException(422, "audio_fallback key_label harus berupa string.")
-        if raw_m is not None and not isinstance(raw_m, str):
-            raise HTTPException(422, "audio_fallback model harus berupa string.")
-        k = (raw_k or "").strip()
-        m = (raw_m or "").strip()
+        k = _opt_str(slot, "key_label", "audio_fallback")
+        m = _opt_str(slot, "model", "audio_fallback")
         if not k and not m:
             continue
         if not k or not m:
@@ -206,7 +208,10 @@ def _validate_audio_fallback(raw_slots: list[dict], models_cfg: dict) -> list[di
 
 
 def _validate_translate_fallback(
-    raw_slots: list[dict], models_cfg: dict, cfg: providers.Config
+    raw_slots: list[dict],
+    models_cfg: dict,
+    cfg: providers.Config,
+    active_key_label: str | None = None,
 ) -> list[dict]:
     if not isinstance(raw_slots, list):
         raise HTTPException(422, "translate_fallback harus berupa list.")
@@ -215,22 +220,14 @@ def _validate_translate_fallback(
     avail = cfg.available_providers()
     keys = providers.get_all_gemini_keys()
     trans_models = models_cfg["translation"]
+    default_key_label = (active_key_label or "").strip() or providers.get_active_gemini_label()
     cleaned: list[dict] = []
     for slot in raw_slots:
         if not isinstance(slot, dict):
             raise HTTPException(422, "translate_fallback slot harus berupa object.")
-        raw_p = slot.get("provider")
-        raw_m = slot.get("model")
-        raw_k = slot.get("key_label")
-        if raw_p is not None and not isinstance(raw_p, str):
-            raise HTTPException(422, "translate_fallback provider harus berupa string.")
-        if raw_m is not None and not isinstance(raw_m, str):
-            raise HTTPException(422, "translate_fallback model harus berupa string.")
-        if raw_k is not None and not isinstance(raw_k, str):
-            raise HTTPException(422, "translate_fallback key_label harus berupa string.")
-        p = (raw_p or "").strip()
-        m = (raw_m or "").strip()
-        k = (raw_k or "").strip()
+        p = _opt_str(slot, "provider", "translate_fallback")
+        m = _opt_str(slot, "model", "translate_fallback")
+        k = _opt_str(slot, "key_label", "translate_fallback")
         if not p and not m:
             continue
         if not p or not m:
@@ -240,7 +237,7 @@ def _validate_translate_fallback(
         if m not in trans_models.get(p, []):
             raise HTTPException(422, f"translate_fallback model tidak dikenal untuk provider {p!r}: {m!r}")
         if p == "gemini":
-            k = k or providers.get_active_gemini_label()
+            k = k or default_key_label
             if k not in keys:
                 raise HTTPException(422, f"translate_fallback key_label tidak dikenal: {k!r}")
         else:
@@ -284,6 +281,7 @@ async def create_job(background_tasks: BackgroundTasks,
     elif output_format not in VALID_FORMATS:
         raise HTTPException(422, f"output_format tidak dikenal: {output_format!r}")
 
+    translator = translator.strip()
     models_cfg = providers.load_models_config()
 
     if mode != "translation_only":
@@ -293,13 +291,17 @@ async def create_job(background_tasks: BackgroundTasks,
     else:
         resolved_transcribe_model = ""
 
-    resolved_timing_model = timing_model.strip() or models_cfg["defaults"]["timing"]
-    if resolved_timing_model not in models_cfg["transcription"]:
-        raise HTTPException(422, f"timing_model tidak dikenal: {resolved_timing_model!r}")
+    if mode == "full":
+        resolved_timing_model = timing_model.strip() or models_cfg["defaults"]["timing"]
+        if resolved_timing_model not in models_cfg["transcription"]:
+            raise HTTPException(422, f"timing_model tidak dikenal: {resolved_timing_model!r}")
 
-    resolved_qc_model = qc_model.strip() or models_cfg["defaults"]["qc"]
-    if resolved_qc_model not in models_cfg["transcription"]:
-        raise HTTPException(422, f"qc_model tidak dikenal: {resolved_qc_model!r}")
+        resolved_qc_model = qc_model.strip() or models_cfg["defaults"]["qc"]
+        if resolved_qc_model not in models_cfg["transcription"]:
+            raise HTTPException(422, f"qc_model tidak dikenal: {resolved_qc_model!r}")
+    else:
+        resolved_timing_model = ""
+        resolved_qc_model = ""
 
     translation_defaults = models_cfg["defaults"]["translation"]
     if mode != "transcription_only":
@@ -443,97 +445,144 @@ class RetryRequest(BaseModel):
 def retry(job_id: str, background_tasks: BackgroundTasks,
           req: RetryRequest | None = None) -> dict:
     live = pipeline.JOBS.get(job_id)
-    if live and live.status == "running":
+    if live is not None and (
+        live.status in ("running", "queued")
+        or (live.cancelled and live.status == "queued")
+    ):
         raise HTTPException(409, "Job masih berjalan.")
-    job = pipeline.load_job(job_id) or _get_job_or_404(job_id)
-    if job.status == "running":
+
+    meta_path = pipeline.OUTPUT_DIR / job_id / "job.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        candidate = pipeline.Job(
+            id=meta["id"],
+            dir=pipeline.OUTPUT_DIR / job_id,
+            params=meta["params"],
+            status=meta["status"],
+            error=meta.get("error"),
+            failed_stage=meta.get("failed_stage"),
+            events=meta.get("events", []),
+        )
+    elif live is not None:
+        candidate = live
+    else:
+        raise HTTPException(404, f"Job {job_id} tidak ditemukan.")
+
+    if candidate.status in ("running", "queued"):
         raise HTTPException(409, "Job masih berjalan.")
 
     models_cfg = providers.load_models_config()
-    new_params = dict(job.params)
-    prev_key_label = providers.get_active_gemini_label()
-    switched_key = False
+    updated_params = dict(candidate.params)
+
+    key_label = ((req.gemini_key_label if req else None) or "").strip()
+    resolved_key = ""
+    if key_label:
+        try:
+            resolved_key = providers.resolve_gemini_key(key_label)
+        except providers.ConfigError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     try:
-        if req and req.gemini_key_label:
-            try:
-                providers.set_active_gemini_key(req.gemini_key_label)
-                switched_key = True
-            except providers.ConfigError as exc:
-                raise HTTPException(422, str(exc)) from exc
-
-        try:
-            cfg = providers.Config.load()
-        except providers.ConfigError as exc:
+        cfg = providers.Config.load()
+    except providers.ConfigError as exc:
+        if not key_label:
             raise HTTPException(500, str(exc)) from exc
+        defaults = models_cfg["defaults"]
+        cfg = providers.Config(
+            gemini_api_key=resolved_key,
+            openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip() or None,
+            anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip() or None,
+            transcribe_model=defaults["transcription"],
+            translate_models=dict(defaults["translation"]),
+            ytdlp_cookies_file=None,
+            sub_min_duration=0.7,
+            sub_max_duration=7.5,
+            sub_merge_gap=0.5,
+            sub_cps_flag=25.0,
+            chunk_min_seconds=240.0,
+            chunk_max_seconds=360.0,
+            timing_model=defaults.get("timing", "gemini-2.5-flash"),
+            qc_window_size=10,
+            qc_batch_size=20,
+            qc_model=defaults.get("qc", "gemini-2.5-flash"),
+        )
 
-        if req:
-            avail = cfg.available_providers()
-            prev_translator = new_params.get("translator") or "gemini"
-            if req.translator:
-                if req.translator not in models_cfg["translation"]:
-                    raise HTTPException(422, f"translator tidak dikenal: {req.translator!r}")
-                if not avail.get(req.translator):
-                    raise HTTPException(
-                        422, f"API key untuk provider {req.translator!r} belum diisi di .env."
-                    )
-                new_params["translator"] = req.translator
-
-            current_translator = new_params.get("translator") or "gemini"
-            valid_translate_models = models_cfg["translation"].get(current_translator, [])
-            if req.translate_model:
-                if req.translate_model not in valid_translate_models:
-                    raise HTTPException(
-                        422,
-                        f"translate_model tidak dikenal untuk provider {current_translator!r}: {req.translate_model!r}",
-                    )
-                new_params["translate_model"] = req.translate_model
-            elif req.translator and req.translator != prev_translator:
-                if new_params.get("translate_model") not in valid_translate_models:
-                    new_params["translate_model"] = models_cfg["defaults"]["translation"][current_translator]
-
-            valid_audio_models = models_cfg["transcription"]
-            if req.transcribe_model:
-                if req.transcribe_model not in valid_audio_models:
-                    raise HTTPException(422, f"transcribe_model tidak dikenal: {req.transcribe_model!r}")
-                new_params["transcribe_model"] = req.transcribe_model
-
-            if req.timing_model:
-                if req.timing_model not in valid_audio_models:
-                    raise HTTPException(422, f"timing_model tidak dikenal: {req.timing_model!r}")
-                new_params["timing_model"] = req.timing_model
-
-            if req.qc_model:
-                if req.qc_model not in valid_audio_models:
-                    raise HTTPException(422, f"qc_model tidak dikenal: {req.qc_model!r}")
-                new_params["qc_model"] = req.qc_model
-
-            if req.deep_audio_qc is not None:
-                new_params["deep_audio_qc"] = req.deep_audio_qc
-
-            if req.audio_fallback is not None:
-                new_params["audio_fallback"] = _validate_audio_fallback(
-                    req.audio_fallback, models_cfg
+    if req:
+        avail = cfg.available_providers()
+        prev_translator = updated_params.get("translator") or "gemini"
+        translator_val = (req.translator or "").strip()
+        if translator_val:
+            if translator_val not in models_cfg["translation"]:
+                raise HTTPException(422, f"translator tidak dikenal: {translator_val!r}")
+            if not avail.get(translator_val):
+                raise HTTPException(
+                    422, f"API key untuk provider {translator_val!r} belum diisi di .env."
                 )
+            updated_params["translator"] = translator_val
 
-            if req.translate_fallback is not None:
-                new_params["translate_fallback"] = _validate_translate_fallback(
-                    req.translate_fallback, models_cfg, cfg
+        current_translator = updated_params.get("translator") or "gemini"
+        valid_translate_models = models_cfg["translation"].get(current_translator, [])
+        translate_model_val = (req.translate_model or "").strip()
+        if translate_model_val:
+            if translate_model_val not in valid_translate_models:
+                raise HTTPException(
+                    422,
+                    f"translate_model tidak dikenal untuk provider {current_translator!r}: {translate_model_val!r}",
                 )
+            updated_params["translate_model"] = translate_model_val
+        elif translator_val and translator_val != prev_translator:
+            if updated_params.get("translate_model") not in valid_translate_models:
+                updated_params["translate_model"] = models_cfg["defaults"]["translation"][current_translator]
+
+        valid_audio_models = models_cfg["transcription"]
+        for field_name, raw_val in (
+            ("transcribe_model", req.transcribe_model),
+            ("timing_model", req.timing_model),
+            ("qc_model", req.qc_model),
+        ):
+            model_val = (raw_val or "").strip()
+            if model_val:
+                if model_val not in valid_audio_models:
+                    raise HTTPException(422, f"{field_name} tidak dikenal: {model_val!r}")
+                updated_params[field_name] = model_val
+
+        if req.deep_audio_qc is not None:
+            updated_params["deep_audio_qc"] = req.deep_audio_qc
+
+        if req.audio_fallback is not None:
+            updated_params["audio_fallback"] = _validate_audio_fallback(
+                req.audio_fallback, models_cfg
+            )
+
+        if req.translate_fallback is not None:
+            updated_params["translate_fallback"] = _validate_translate_fallback(
+                req.translate_fallback,
+                models_cfg,
+                cfg,
+                active_key_label=key_label or providers.get_active_gemini_label(),
+            )
+
+    prev_key_label = providers.get_active_gemini_label()
+    switched_key = False
+    if key_label:
+        providers.set_active_gemini_key(key_label)
+        switched_key = True
+    try:
+        candidate.params = updated_params
+        candidate.status = "queued"
+        candidate.error = None
+        candidate.failed_stage = None
+        candidate.cancelled = False
+        candidate.events.clear()
+        pipeline._save(candidate)
+        pipeline.JOBS[job_id] = candidate
     except Exception:
-        if switched_key and prev_key_label in providers.get_all_gemini_keys():
-            providers.set_active_gemini_key(prev_key_label)
+        if switched_key:
+            providers._active_gemini_label = prev_key_label
         raise
 
-    job.params = new_params
-    job.status = "queued"
-    job.error = None
-    job.failed_stage = None
-    job.cancelled = False
-    job.events.clear()
-    pipeline._save(job)
-    background_tasks.add_task(pipeline.run_job, job.id)
-    return {"job_id": job.id, "status": "queued"}
+    background_tasks.add_task(pipeline.run_job, candidate.id)
+    return {"job_id": candidate.id, "status": "queued"}
 
 
 @app.post("/api/jobs/{job_id}/cancel")

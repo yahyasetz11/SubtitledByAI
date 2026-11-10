@@ -1,5 +1,6 @@
 import json
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import main, pipeline, providers
@@ -27,6 +28,7 @@ def fake_run(monkeypatch):
             "result": {"usage": {"line": "Tokens: 0 in / 0 out (~$0.00)"},
                        "files": ["result.ass", "result.srt"]},
         })
+        pipeline._save(job)
 
     monkeypatch.setattr(pipeline, "run_job", run)
     return calls
@@ -148,11 +150,14 @@ def test_retry_reloads_disk_changes(client, fake_run):
 
 def test_retry_invalid_model_returns_422(client, fake_run):
     job_id = post_url_job(client).json()["job_id"]
+    orig_params = dict(pipeline.JOBS[job_id].params)
     resp = client.post(
         f"/api/jobs/{job_id}/retry",
         json={"translate_model": "invalid-model-name"}
     )
     assert resp.status_code == 422
+    assert pipeline.JOBS[job_id].params == orig_params
+    assert fake_run == [job_id]
 
 
 def test_retry_with_gemini_key_override(client, fake_run, monkeypatch):
@@ -589,8 +594,11 @@ def test_retry_accepts_and_validates_all_overrides_and_clears_failed_stage(clien
 ])
 def test_retry_rejects_invalid_overrides_with_422(client, fake_run, payload):
     job_id = post_url_job(client).json()["job_id"]
+    orig_params = dict(pipeline.JOBS[job_id].params)
     resp = client.post(f"/api/jobs/{job_id}/retry", json=payload)
     assert resp.status_code == 422
+    assert pipeline.JOBS[job_id].params == orig_params
+    assert fake_run == [job_id]
 
 
 def test_retry_switches_translator_and_resets_default_translate_model(client, fake_run, monkeypatch):
@@ -622,4 +630,238 @@ def test_retry_returns_409_when_live_job_is_running_even_if_disk_says_failed(cli
     resp = client.post(f"/api/jobs/{job_id}/retry")
     assert resp.status_code == 409
     assert pipeline.JOBS[job_id].status == "running"
+    assert fake_run == [job_id]
+
+
+def test_retry_rejects_queued_live_and_disk_jobs_with_409(client, fake_run, tmp_path):
+    # Live queued job (even if disk says failed)
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    job.status = "failed"
+    pipeline._save(job)
+    job.status = "queued"
+
+    resp_live = client.post(f"/api/jobs/{job_id}/retry")
+    assert resp_live.status_code == 409
+    assert pipeline.JOBS[job_id].status == "queued"
+    assert fake_run == [job_id]
+
+    # On-disk queued job (not loaded in pipeline.JOBS)
+    disk_job_id = "20260618-100000-queued"
+    _write_job(tmp_path, disk_job_id, "queued", original_filename="ep_q.mp4")
+    resp_disk = client.post(f"/api/jobs/{disk_job_id}/retry")
+    assert resp_disk.status_code == 409
+    assert disk_job_id not in pipeline.JOBS
+    assert fake_run == [job_id]
+
+
+def test_retry_succeeds_on_cancelled_job_and_clears_flags(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    job.status = "cancelled"
+    job.cancelled = True
+    job.failed_stage = "translate"
+    pipeline._save(job)
+
+    resp = client.post(f"/api/jobs/{job_id}/retry")
+    assert resp.status_code == 200
+    reloaded = pipeline.JOBS[job_id]
+    assert reloaded.cancelled is False
+    assert reloaded.failed_stage is None
+    assert reloaded.error is None
+    disk = json.loads((reloaded.dir / "job.json").read_text(encoding="utf-8"))
+    assert disk["failed_stage"] is None
+    assert fake_run == [job_id, job_id]
+
+
+def test_retry_key_override_plus_invalid_model_is_atomic_even_without_default_key(
+    client, fake_run, monkeypatch
+):
+    monkeypatch.setenv("GEMINI_API_KEY_SECONDARY", "sec-key-123")
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    orig_params = dict(job.params)
+    orig_disk = (job.dir / "job.json").read_text(encoding="utf-8")
+
+    # Unset default key while _active_gemini_label == "Default"
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert providers.get_active_gemini_label() == "Default"
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"gemini_key_label": "SECONDARY", "translate_model": "invalid-model"},
+    )
+    assert resp.status_code == 422
+    assert providers.get_active_gemini_label() == "Default"
+    assert pipeline.JOBS[job_id].params == orig_params
+    assert (job.dir / "job.json").read_text(encoding="utf-8") == orig_disk
+    assert fake_run == [job_id]
+
+
+def test_retry_pending_gemini_key_used_for_translate_fallback_without_mutating_on_error(
+    client, fake_run, monkeypatch
+):
+    monkeypatch.setenv("GEMINI_API_KEY_SECONDARY", "sec-key-123")
+    job_id = post_url_job(client).json()["job_id"]
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    # Valid retry with gemini_key_label + translate_fallback omitting slot key_label
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={
+            "gemini_key_label": "SECONDARY",
+            "translate_fallback": [{"provider": "gemini", "model": "gemini-2.5-flash"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert providers.get_active_gemini_label() == "SECONDARY"
+    assert pipeline.JOBS[job_id].params["translate_fallback"] == [
+        {"provider": "gemini", "model": "gemini-2.5-flash", "key_label": "SECONDARY"}
+    ]
+
+
+def test_retry_commit_rollback_restores_default_key_even_when_unset(
+    client, fake_run, monkeypatch
+):
+    monkeypatch.setenv("GEMINI_API_KEY_SECONDARY", "sec-key-123")
+    job_id = post_url_job(client).json()["job_id"]
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(pipeline, "_save", lambda _job: (_ for _ in ()).throw(OSError("disk full")))
+
+    with pytest.raises(OSError, match="disk full"):
+        client.post(f"/api/jobs/{job_id}/retry", json={"gemini_key_label": "SECONDARY"})
+
+    assert providers.get_active_gemini_label() == "Default"
+    assert fake_run == [job_id]
+
+
+def test_retry_strips_whitespace_overrides_and_treats_blank_as_unset(client, fake_run, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY_SECONDARY", "sec-key-123")
+    job_id = post_url_job(client).json()["job_id"]
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={
+            "translator": " gemini ",
+            "translate_model": " gemini-3.7-flash ",
+            "transcribe_model": " gemini-2.5-flash ",
+            "timing_model": " gemini-2.5-pro ",
+            "qc_model": " gemini-2.5-flash ",
+            "gemini_key_label": " SECONDARY ",
+        },
+    )
+    assert resp.status_code == 200
+    params = pipeline.JOBS[job_id].params
+    assert params["translator"] == "gemini"
+    assert params["translate_model"] == "gemini-3.7-flash"
+    assert params["transcribe_model"] == "gemini-2.5-flash"
+    assert params["timing_model"] == "gemini-2.5-pro"
+    assert params["qc_model"] == "gemini-2.5-flash"
+    assert providers.get_active_gemini_label() == "SECONDARY"
+
+    resp_blank = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={
+            "translator": "   ",
+            "translate_model": "   ",
+            "transcribe_model": "   ",
+            "timing_model": "   ",
+            "qc_model": "   ",
+            "gemini_key_label": "   ",
+        },
+    )
+    assert resp_blank.status_code == 200
+    assert pipeline.JOBS[job_id].params == params
+    assert providers.get_active_gemini_label() == "SECONDARY"
+
+
+def test_create_job_strips_translator_and_clears_timing_qc_outside_full_mode(client, fake_run):
+    resp_tr_only = post_url_job(
+        client,
+        mode="transcription_only",
+        output_format="json",
+        translator=" gemini ",
+        timing_model="invalid-ignored",
+        qc_model="invalid-ignored",
+    )
+    assert resp_tr_only.status_code == 200
+    job1 = pipeline.JOBS[resp_tr_only.json()["job_id"]]
+    assert job1.params["translator"] == "gemini"
+    assert job1.params["timing_model"] == ""
+    assert job1.params["qc_model"] == ""
+    assert job1.params["translate_model"] == ""
+
+    resp_tl_only = client.post(
+        "/api/jobs",
+        data={
+            "source": "file",
+            "mode": "translation_only",
+            "translator": " gemini ",
+            "output_format": "ass",
+            "timing_model": "invalid-ignored",
+            "qc_model": "invalid-ignored",
+        },
+        files={"file": ("utts.json", b"[]", "application/json")},
+    )
+    assert resp_tl_only.status_code == 200
+    job2 = pipeline.JOBS[resp_tl_only.json()["job_id"]]
+    assert job2.params["translator"] == "gemini"
+    assert job2.params["timing_model"] == ""
+    assert job2.params["qc_model"] == ""
+    assert job2.params["transcribe_model"] == ""
+
+
+def test_validate_fallback_rejects_non_dict_slot_and_non_string_fields():
+    models_cfg = load_models_config()
+    cfg = providers.Config.load()
+
+    with pytest.raises(HTTPException) as exc1:
+        main._validate_audio_fallback(["not-a-dict"], models_cfg)
+    assert exc1.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc2:
+        main._validate_audio_fallback([{"key_label": 123, "model": "gemini-2.5-flash"}], models_cfg)
+    assert exc2.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc3:
+        main._validate_translate_fallback(["not-a-dict"], models_cfg, cfg)
+    assert exc3.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc4:
+        main._validate_translate_fallback(
+            [{"provider": "gemini", "model": 123}], models_cfg, cfg
+        )
+    assert exc4.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc5:
+        main._validate_translate_fallback(
+            [{"provider": "gemini", "model": "gemini-2.5-flash", "key_label": 123}],
+            models_cfg,
+            cfg,
+        )
+    assert exc5.value.status_code == 422
+
+
+@pytest.mark.parametrize("payload", [
+    {"audio_fallback": [{"key_label": 123, "model": "gemini-2.5-flash"}]},
+    {"translate_fallback": [{"provider": "gemini", "model": "gemini-2.5-flash", "key_label": 123}]},
+    {"audio_fallback": [
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+    ]},
+    {"translate_fallback": [
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+    ]},
+])
+def test_retry_rejects_non_string_fallback_field_and_over_three_slots(client, fake_run, payload):
+    job_id = post_url_job(client).json()["job_id"]
+    orig_params = dict(pipeline.JOBS[job_id].params)
+    resp = client.post(f"/api/jobs/{job_id}/retry", json=payload)
+    assert resp.status_code == 422
+    assert pipeline.JOBS[job_id].params == orig_params
     assert fake_run == [job_id]
