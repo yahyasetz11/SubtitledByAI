@@ -1,7 +1,8 @@
+import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, pipeline
+from app import main, pipeline, providers
 from app.providers import load_models_config
 
 
@@ -115,6 +116,54 @@ def test_retry_requeues_job(client, fake_run):
     resp = client.post(f"/api/jobs/{job_id}/retry")
     assert resp.status_code == 200
     assert fake_run == [job_id, job_id]
+
+
+def test_retry_with_model_override(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"translate_model": "gemini-3.7-flash"}
+    )
+    assert resp.status_code == 200
+    job = pipeline.JOBS[job_id]
+    assert job.params["translate_model"] == "gemini-3.7-flash"
+    # verify persisted to job.json on disk
+    disk_data = json.loads((job.dir / "job.json").read_text(encoding="utf-8"))
+    assert disk_data["params"]["translate_model"] == "gemini-3.7-flash"
+
+
+def test_retry_reloads_disk_changes(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    # Simulate user modifying job.json on disk directly
+    job_json_path = job.dir / "job.json"
+    data = json.loads(job_json_path.read_text(encoding="utf-8"))
+    data["params"]["translate_model"] = "gemini-3.7-flash"
+    job_json_path.write_text(json.dumps(data), encoding="utf-8")
+
+    resp = client.post(f"/api/jobs/{job_id}/retry")
+    assert resp.status_code == 200
+    assert pipeline.JOBS[job_id].params["translate_model"] == "gemini-3.7-flash"
+
+
+def test_retry_invalid_model_returns_422(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"translate_model": "invalid-model-name"}
+    )
+    assert resp.status_code == 422
+
+
+def test_retry_with_gemini_key_override(client, fake_run, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY_SECONDARY", "sec-key-123")
+    job_id = post_url_job(client).json()["job_id"]
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"gemini_key_label": "SECONDARY"}
+    )
+    assert resp.status_code == 200
+    assert providers.get_active_gemini_label() == "SECONDARY"
 
 
 def test_unknown_job_404(client):
@@ -354,3 +403,223 @@ def test_create_job_empty_translate_model_uses_default(client, fake_run):
     assert resp.status_code == 200
     job = pipeline.JOBS[resp.json()["job_id"]]
     assert job.params["translate_model"] == models_cfg["defaults"]["translation"]["gemini"]
+
+
+# ---------------------------------------------------------------------------
+# QC report download, timing/QC models, fallback validation, failed_stage, retry
+# ---------------------------------------------------------------------------
+
+
+def test_download_qc_report_maps_to_qc_subdir_and_404_when_absent(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    assert client.get(f"/api/jobs/{job_id}/files/qc_report.json").status_code == 404
+
+    qc_dir = job.dir / "qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    report_payload = {"mode": "hybrid", "summary": {"translation_fixes": 2}, "issues": []}
+    (qc_dir / "report.json").write_text(json.dumps(report_payload), encoding="utf-8")
+
+    resp = client.get(f"/api/jobs/{job_id}/files/qc_report.json")
+    assert resp.status_code == 200
+    assert resp.json() == report_payload
+
+
+def test_create_job_validates_and_stores_qc_timing_and_fallbacks(client, fake_run, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY_ALT", "alt-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    models_cfg = load_models_config()
+    timing_model = models_cfg["transcription"][0]
+    qc_model = models_cfg["transcription"][-1]
+    audio_fb = [
+        {},
+        {"key_label": "ALT", "model": "gemini-2.5-flash"},
+    ]
+    translate_fb = [
+        {"provider": "", "model": ""},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "openai", "model": "gpt-4o", "key_label": "ALT"},
+    ]
+    resp = post_url_job(
+        client,
+        timing_model=timing_model,
+        qc_model=qc_model,
+        deep_audio_qc="true",
+        audio_fallback=json.dumps(audio_fb),
+        translate_fallback=json.dumps(translate_fb),
+    )
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["timing_model"] == timing_model
+    assert job.params["qc_model"] == qc_model
+    assert job.params["deep_audio_qc"] is True
+    assert job.params["audio_fallback"] == [
+        {"key_label": "ALT", "model": "gemini-2.5-flash"},
+    ]
+    assert job.params["translate_fallback"] == [
+        {"provider": "gemini", "model": "gemini-2.5-flash", "key_label": "Default"},
+        {"provider": "openai", "model": "gpt-4o", "key_label": None},
+    ]
+
+
+def test_create_job_defaults_timing_qc_deep_and_fallbacks(client, fake_run):
+    models_cfg = load_models_config()
+    resp = post_url_job(client)
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["timing_model"] == models_cfg["defaults"]["timing"]
+    assert job.params["qc_model"] == models_cfg["defaults"]["qc"]
+    assert job.params["deep_audio_qc"] is False
+    assert job.params["audio_fallback"] == []
+    assert job.params["translate_fallback"] == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("timing_model", "nonexistent-timing-model"),
+    ("qc_model", "nonexistent-qc-model"),
+    ("audio_fallback", "{not-json"),
+    ("translate_fallback", "{not-json"),
+    ("audio_fallback", '{"key_label": "Default", "model": "gemini-2.5-flash"}'),
+    ("translate_fallback", '{"provider": "gemini", "model": "gemini-2.5-flash"}'),
+    ("audio_fallback", json.dumps([
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+        {"key_label": "Default", "model": "gemini-2.5-flash"},
+    ])),
+    ("translate_fallback", json.dumps([
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+        {"provider": "gemini", "model": "gemini-2.5-flash"},
+    ])),
+    ("audio_fallback", json.dumps([{"key_label": "Default", "model": ""}])),
+    ("audio_fallback", json.dumps([{"key_label": "", "model": "gemini-2.5-flash"}])),
+    ("audio_fallback", json.dumps([{"key_label": "NO_SUCH_KEY", "model": "gemini-2.5-flash"}])),
+    ("audio_fallback", json.dumps([{"key_label": "Default", "model": "bogus-model"}])),
+    ("translate_fallback", json.dumps([{"provider": "gemini", "model": ""}])),
+    ("translate_fallback", json.dumps([{"provider": "", "model": "gemini-2.5-flash"}])),
+    ("translate_fallback", json.dumps([{"provider": "gemini", "model": "bogus-model"}])),
+    ("translate_fallback", json.dumps([{"provider": "gemini", "model": "gemini-2.5-flash", "key_label": "NO_SUCH_KEY"}])),
+    ("translate_fallback", json.dumps([{"provider": "unknown-prov", "model": "gpt-4o"}])),
+])
+def test_create_job_invalid_qc_timing_or_fallback_returns_422(client, field, value):
+    resp = post_url_job(client, **{field: value})
+    assert resp.status_code == 422
+
+
+def test_create_job_unconfigured_provider_in_translate_fallback_returns_422(client, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    fb = [{"provider": "openai", "model": "gpt-4o"}]
+    resp = post_url_job(client, translate_fallback=json.dumps(fb))
+    assert resp.status_code == 422
+
+
+def test_job_status_and_sessions_include_failed_stage(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    assert client.get(f"/api/jobs/{job_id}").json()["failed_stage"] is None
+
+    job.status = "failed"
+    job.failed_stage = "qc"
+    pipeline._save(job)
+
+    status_body = client.get(f"/api/jobs/{job_id}").json()
+    assert status_body["failed_stage"] == "qc"
+
+    sessions = client.get("/api/sessions").json()["sessions"]
+    match = [s for s in sessions if s["id"] == job_id]
+    assert len(match) == 1
+    assert match[0]["failed_stage"] == "qc"
+
+
+def test_retry_accepts_and_validates_all_overrides_and_clears_failed_stage(client, fake_run, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY_ALT", "alt-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    job.status = "failed"
+    job.error = "qc failed"
+    job.failed_stage = "qc"
+    pipeline._save(job)
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={
+            "transcribe_model": "gemini-2.5-flash",
+            "timing_model": "gemini-2.5-pro",
+            "qc_model": "gemini-3.7-flash",
+            "deep_audio_qc": True,
+            "audio_fallback": [{"key_label": "ALT", "model": "gemini-2.5-flash"}],
+            "translate_fallback": [{"provider": "openai", "model": "gpt-4o"}],
+        },
+    )
+    assert resp.status_code == 200
+    reloaded = pipeline.JOBS[job_id]
+    assert reloaded.failed_stage is None
+    assert reloaded.params["transcribe_model"] == "gemini-2.5-flash"
+    assert reloaded.params["timing_model"] == "gemini-2.5-pro"
+    assert reloaded.params["qc_model"] == "gemini-3.7-flash"
+    assert reloaded.params["deep_audio_qc"] is True
+    assert reloaded.params["audio_fallback"] == [{"key_label": "ALT", "model": "gemini-2.5-flash"}]
+    assert reloaded.params["translate_fallback"] == [
+        {"provider": "openai", "model": "gpt-4o", "key_label": None}
+    ]
+    disk = json.loads((reloaded.dir / "job.json").read_text(encoding="utf-8"))
+    assert disk["failed_stage"] is None
+
+    resp2 = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"deep_audio_qc": False, "audio_fallback": [], "translate_fallback": []},
+    )
+    assert resp2.status_code == 200
+    assert pipeline.JOBS[job_id].params["deep_audio_qc"] is False
+    assert pipeline.JOBS[job_id].params["audio_fallback"] == []
+    assert pipeline.JOBS[job_id].params["translate_fallback"] == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"transcribe_model": "bad-model"},
+    {"timing_model": "bad-model"},
+    {"qc_model": "bad-model"},
+    {"translator": "unknown-provider"},
+    {"audio_fallback": [{"key_label": "NOPE", "model": "gemini-2.5-flash"}]},
+    {"audio_fallback": [{"key_label": "Default", "model": ""}]},
+    {"translate_fallback": [{"provider": "gemini", "model": "bad-model"}]},
+])
+def test_retry_rejects_invalid_overrides_with_422(client, fake_run, payload):
+    job_id = post_url_job(client).json()["job_id"]
+    resp = client.post(f"/api/jobs/{job_id}/retry", json=payload)
+    assert resp.status_code == 422
+
+
+def test_retry_switches_translator_and_resets_default_translate_model(client, fake_run, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    models_cfg = load_models_config()
+    job_id = post_url_job(client, translator="gemini", translate_model="gemini-3.7-flash").json()["job_id"]
+
+    resp = client.post(f"/api/jobs/{job_id}/retry", json={"translator": "openai"})
+    assert resp.status_code == 200
+    job = pipeline.JOBS[job_id]
+    assert job.params["translator"] == "openai"
+    assert job.params["translate_model"] == models_cfg["defaults"]["translation"]["openai"]
+
+
+def test_retry_rejects_unconfigured_translator_422(client, fake_run, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    job_id = post_url_job(client).json()["job_id"]
+    resp = client.post(f"/api/jobs/{job_id}/retry", json={"translator": "openai"})
+    assert resp.status_code == 422
+
+
+def test_retry_returns_409_when_live_job_is_running_even_if_disk_says_failed(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    job.status = "failed"
+    pipeline._save(job)
+    job.status = "running"
+
+    resp = client.post(f"/api/jobs/{job_id}/retry")
+    assert resp.status_code == 409
+    assert pipeline.JOBS[job_id].status == "running"
+    assert fake_run == [job_id]

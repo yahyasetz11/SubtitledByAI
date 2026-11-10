@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from app import audio, pipeline, providers
 
@@ -48,7 +49,7 @@ CONTEXT_DIR = Path("context")
 # Allowlist: never serve job.json (contains params) or arbitrary paths.
 DOWNLOADABLE = {"result.ass", "result.srt", "transcript_jp.json",
                 "translated_id.json", "flags.json", "usage.json",
-                "source.mp4", "result_jp.ass"}
+                "source.mp4", "result_jp.ass", "qc_report.json"}
 # Files allowed to be streamed inline (for in-browser preview player)
 STREAMABLE = {"source.mp4", "audio.mp3", "result.ass", "result_jp.ass"}
 VALID_FORMATS = {"ass", "srt", "both"}
@@ -119,6 +120,7 @@ def list_sessions(include_done: bool = Query(False)) -> dict:
             "id": job_id,
             "label": f"{ts} · {display_name} · {status}",
             "status": status,
+            "failed_stage": meta.get("failed_stage"),
             "mode": mode,
             "mode_label": _MODE_LABELS.get(mode, mode),
         })
@@ -162,6 +164,91 @@ def _get_job_or_404(job_id: str) -> pipeline.Job:
     return job
 
 
+def _parse_fallback_json(raw: str, field_name: str) -> list[dict]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(422, f"{field_name} bukan JSON valid.") from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(422, f"{field_name} harus berupa JSON list.")
+    return parsed
+
+
+def _validate_audio_fallback(raw_slots: list[dict], models_cfg: dict) -> list[dict]:
+    if not isinstance(raw_slots, list):
+        raise HTTPException(422, "audio_fallback harus berupa list.")
+    if len(raw_slots) > 3:
+        raise HTTPException(422, "audio_fallback maksimal 3 slot.")
+    keys = providers.get_all_gemini_keys()
+    valid_models = set(models_cfg["transcription"])
+    cleaned: list[dict] = []
+    for slot in raw_slots:
+        if not isinstance(slot, dict):
+            raise HTTPException(422, "audio_fallback slot harus berupa object.")
+        raw_k = slot.get("key_label")
+        raw_m = slot.get("model")
+        if raw_k is not None and not isinstance(raw_k, str):
+            raise HTTPException(422, "audio_fallback key_label harus berupa string.")
+        if raw_m is not None and not isinstance(raw_m, str):
+            raise HTTPException(422, "audio_fallback model harus berupa string.")
+        k = (raw_k or "").strip()
+        m = (raw_m or "").strip()
+        if not k and not m:
+            continue
+        if not k or not m:
+            raise HTTPException(422, "audio_fallback slot harus mengisi key_label dan model.")
+        if k not in keys:
+            raise HTTPException(422, f"audio_fallback key_label tidak dikenal: {k!r}")
+        if m not in valid_models:
+            raise HTTPException(422, f"audio_fallback model tidak dikenal: {m!r}")
+        cleaned.append({"key_label": k, "model": m})
+    return cleaned
+
+
+def _validate_translate_fallback(
+    raw_slots: list[dict], models_cfg: dict, cfg: providers.Config
+) -> list[dict]:
+    if not isinstance(raw_slots, list):
+        raise HTTPException(422, "translate_fallback harus berupa list.")
+    if len(raw_slots) > 3:
+        raise HTTPException(422, "translate_fallback maksimal 3 slot.")
+    avail = cfg.available_providers()
+    keys = providers.get_all_gemini_keys()
+    trans_models = models_cfg["translation"]
+    cleaned: list[dict] = []
+    for slot in raw_slots:
+        if not isinstance(slot, dict):
+            raise HTTPException(422, "translate_fallback slot harus berupa object.")
+        raw_p = slot.get("provider")
+        raw_m = slot.get("model")
+        raw_k = slot.get("key_label")
+        if raw_p is not None and not isinstance(raw_p, str):
+            raise HTTPException(422, "translate_fallback provider harus berupa string.")
+        if raw_m is not None and not isinstance(raw_m, str):
+            raise HTTPException(422, "translate_fallback model harus berupa string.")
+        if raw_k is not None and not isinstance(raw_k, str):
+            raise HTTPException(422, "translate_fallback key_label harus berupa string.")
+        p = (raw_p or "").strip()
+        m = (raw_m or "").strip()
+        k = (raw_k or "").strip()
+        if not p and not m:
+            continue
+        if not p or not m:
+            raise HTTPException(422, "translate_fallback slot harus mengisi provider dan model.")
+        if not avail.get(p):
+            raise HTTPException(422, f"translate_fallback provider tidak tersedia atau belum dikonfigurasi: {p!r}")
+        if m not in trans_models.get(p, []):
+            raise HTTPException(422, f"translate_fallback model tidak dikenal untuk provider {p!r}: {m!r}")
+        if p == "gemini":
+            k = k or providers.get_active_gemini_label()
+            if k not in keys:
+                raise HTTPException(422, f"translate_fallback key_label tidak dikenal: {k!r}")
+        else:
+            k = None
+        cleaned.append({"provider": p, "model": m, "key_label": k})
+    return cleaned
+
+
 @app.post("/api/jobs")
 async def create_job(background_tasks: BackgroundTasks,
                      source: str = Form(...),
@@ -175,6 +262,11 @@ async def create_job(background_tasks: BackgroundTasks,
                      additional_context: str = Form(""),
                      transcribe_model: str = Form(""),
                      translate_model: str = Form(""),
+                     timing_model: str = Form(""),
+                     qc_model: str = Form(""),
+                     deep_audio_qc: bool = Form(False),
+                     audio_fallback: str = Form("[]"),
+                     translate_fallback: str = Form("[]"),
                      mode: str = Form("full"),
                      source_job_id: str = Form(""),
                      file: UploadFile | None = File(None)) -> dict:
@@ -201,6 +293,14 @@ async def create_job(background_tasks: BackgroundTasks,
     else:
         resolved_transcribe_model = ""
 
+    resolved_timing_model = timing_model.strip() or models_cfg["defaults"]["timing"]
+    if resolved_timing_model not in models_cfg["transcription"]:
+        raise HTTPException(422, f"timing_model tidak dikenal: {resolved_timing_model!r}")
+
+    resolved_qc_model = qc_model.strip() or models_cfg["defaults"]["qc"]
+    if resolved_qc_model not in models_cfg["transcription"]:
+        raise HTTPException(422, f"qc_model tidak dikenal: {resolved_qc_model!r}")
+
     translation_defaults = models_cfg["defaults"]["translation"]
     if mode != "transcription_only":
         if not translate_model.strip() and translator not in translation_defaults:
@@ -211,6 +311,9 @@ async def create_job(background_tasks: BackgroundTasks,
             raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
     else:
         resolved_translate_model = ""
+
+    raw_audio_fallback = _parse_fallback_json(audio_fallback, "audio_fallback")
+    raw_translate_fallback = _parse_fallback_json(translate_fallback, "translate_fallback")
 
     upload_bytes: bytes | None = None
     upload_name: str | None = None
@@ -241,6 +344,11 @@ async def create_job(background_tasks: BackgroundTasks,
         raise HTTPException(
             422, f"API key untuk provider {translator!r} belum diisi di .env.")
 
+    validated_audio_fallback = _validate_audio_fallback(raw_audio_fallback, models_cfg)
+    validated_translate_fallback = _validate_translate_fallback(
+        raw_translate_fallback, models_cfg, cfg
+    )
+
     params = {
         "mode": mode,
         "source": source,
@@ -255,6 +363,11 @@ async def create_job(background_tasks: BackgroundTasks,
         "additional_context": additional_context.strip() or None,
         "transcribe_model": resolved_transcribe_model,
         "translate_model": resolved_translate_model,
+        "timing_model": resolved_timing_model,
+        "qc_model": resolved_qc_model,
+        "deep_audio_qc": bool(deep_audio_qc),
+        "audio_fallback": validated_audio_fallback,
+        "translate_fallback": validated_translate_fallback,
         "source_job_id": source_job_id.strip() or None,
     }
     job = pipeline.create_job(params, upload_bytes=upload_bytes,
@@ -267,6 +380,7 @@ async def create_job(background_tasks: BackgroundTasks,
 def job_status(job_id: str) -> dict:
     job = _get_job_or_404(job_id)
     return {"id": job.id, "status": job.status, "error": job.error,
+            "failed_stage": job.failed_stage,
             "params": job.params, "events": job.events}
 
 
@@ -295,7 +409,7 @@ def download(job_id: str, filename: str) -> FileResponse:
     job = _get_job_or_404(job_id)
     if filename not in DOWNLOADABLE:
         raise HTTPException(404, "File tidak tersedia untuk diunduh.")
-    path = job.dir / filename
+    path = (job.dir / "qc" / "report.json") if filename == "qc_report.json" else (job.dir / filename)
     if not path.exists():
         raise HTTPException(404, f"{filename} belum ada.")
     return FileResponse(path, filename=f"{job.id}_{filename}")
@@ -313,14 +427,111 @@ def stream_media(job_id: str, filename: str) -> FileResponse:
     return FileResponse(path, headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
+class RetryRequest(BaseModel):
+    transcribe_model: str | None = None
+    timing_model: str | None = None
+    qc_model: str | None = None
+    translate_model: str | None = None
+    translator: str | None = None
+    gemini_key_label: str | None = None
+    deep_audio_qc: bool | None = None
+    audio_fallback: list[dict] | None = None
+    translate_fallback: list[dict] | None = None
+
+
 @app.post("/api/jobs/{job_id}/retry")
-def retry(job_id: str, background_tasks: BackgroundTasks) -> dict:
-    job = _get_job_or_404(job_id)
+def retry(job_id: str, background_tasks: BackgroundTasks,
+          req: RetryRequest | None = None) -> dict:
+    live = pipeline.JOBS.get(job_id)
+    if live and live.status == "running":
+        raise HTTPException(409, "Job masih berjalan.")
+    job = pipeline.load_job(job_id) or _get_job_or_404(job_id)
     if job.status == "running":
         raise HTTPException(409, "Job masih berjalan.")
+
+    models_cfg = providers.load_models_config()
+    new_params = dict(job.params)
+    prev_key_label = providers.get_active_gemini_label()
+    switched_key = False
+
+    try:
+        if req and req.gemini_key_label:
+            try:
+                providers.set_active_gemini_key(req.gemini_key_label)
+                switched_key = True
+            except providers.ConfigError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+        try:
+            cfg = providers.Config.load()
+        except providers.ConfigError as exc:
+            raise HTTPException(500, str(exc)) from exc
+
+        if req:
+            avail = cfg.available_providers()
+            prev_translator = new_params.get("translator") or "gemini"
+            if req.translator:
+                if req.translator not in models_cfg["translation"]:
+                    raise HTTPException(422, f"translator tidak dikenal: {req.translator!r}")
+                if not avail.get(req.translator):
+                    raise HTTPException(
+                        422, f"API key untuk provider {req.translator!r} belum diisi di .env."
+                    )
+                new_params["translator"] = req.translator
+
+            current_translator = new_params.get("translator") or "gemini"
+            valid_translate_models = models_cfg["translation"].get(current_translator, [])
+            if req.translate_model:
+                if req.translate_model not in valid_translate_models:
+                    raise HTTPException(
+                        422,
+                        f"translate_model tidak dikenal untuk provider {current_translator!r}: {req.translate_model!r}",
+                    )
+                new_params["translate_model"] = req.translate_model
+            elif req.translator and req.translator != prev_translator:
+                if new_params.get("translate_model") not in valid_translate_models:
+                    new_params["translate_model"] = models_cfg["defaults"]["translation"][current_translator]
+
+            valid_audio_models = models_cfg["transcription"]
+            if req.transcribe_model:
+                if req.transcribe_model not in valid_audio_models:
+                    raise HTTPException(422, f"transcribe_model tidak dikenal: {req.transcribe_model!r}")
+                new_params["transcribe_model"] = req.transcribe_model
+
+            if req.timing_model:
+                if req.timing_model not in valid_audio_models:
+                    raise HTTPException(422, f"timing_model tidak dikenal: {req.timing_model!r}")
+                new_params["timing_model"] = req.timing_model
+
+            if req.qc_model:
+                if req.qc_model not in valid_audio_models:
+                    raise HTTPException(422, f"qc_model tidak dikenal: {req.qc_model!r}")
+                new_params["qc_model"] = req.qc_model
+
+            if req.deep_audio_qc is not None:
+                new_params["deep_audio_qc"] = req.deep_audio_qc
+
+            if req.audio_fallback is not None:
+                new_params["audio_fallback"] = _validate_audio_fallback(
+                    req.audio_fallback, models_cfg
+                )
+
+            if req.translate_fallback is not None:
+                new_params["translate_fallback"] = _validate_translate_fallback(
+                    req.translate_fallback, models_cfg, cfg
+                )
+    except Exception:
+        if switched_key and prev_key_label in providers.get_all_gemini_keys():
+            providers.set_active_gemini_key(prev_key_label)
+        raise
+
+    job.params = new_params
     job.status = "queued"
     job.error = None
+    job.failed_stage = None
+    job.cancelled = False
     job.events.clear()
+    pipeline._save(job)
     background_tasks.add_task(pipeline.run_job, job.id)
     return {"job_id": job.id, "status": "queued"}
 
