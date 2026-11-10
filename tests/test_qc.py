@@ -6,11 +6,17 @@ from app.audio import AudioError, PlannedChunk, Silence
 from app.providers import LLMResponse
 from app.qc import (
     ACOUSTIC_FLAG_REASONS,
+    apply_audio_qc_results,
     apply_text_qc_results,
     audit_local,
+    build_audio_qc_user_prompt,
+    build_audio_qc_windows,
     build_text_qc_user_prompt,
+    load_qc,
     parse_qc_response,
+    run_qc_all,
     run_text_qc,
+    save_qc,
 )
 
 
@@ -809,3 +815,619 @@ def test_run_text_qc_duplicate_row_ids_window_boundary_and_nonsequential_ids(tmp
         checkpoint_path=ckpt,
     )
     assert resumed == (fixed_s, issues_s, audio_s)
+
+
+def test_build_audio_qc_windows_groups_nearby_flagged_rows_and_skips_clean():
+    rows = [
+        _row(1, 1.0, 2.0),
+        _row(2, 3.0, 4.0),    # flagged
+        _row(3, 5.0, 6.0),    # close to row 2 (gap 1s) -> same slice
+        _row(4, 120.0, 122.0),
+        _row(5, 130.0, 132.0), # flagged, far from 2/3 -> separate slice
+    ]
+    assert build_audio_qc_windows(rows, flagged_ids=set(), deep_audio_qc=False) == []
+    windows = build_audio_qc_windows(rows, flagged_ids={2, 3, 5}, deep_audio_qc=False)
+    assert len(windows) == 2
+    assert [r["id"] for r in windows[0]["batch"]] == [2, 3]
+    assert [r["id"] for r in windows[1]["batch"]] == [5]
+
+
+def test_build_audio_qc_windows_span_limit_deep_clamping_and_context():
+    assert build_audio_qc_windows([], flagged_ids={1}, deep_audio_qc=True) == []
+    assert build_audio_qc_windows([], flagged_ids={1}, deep_audio_qc=False) == []
+
+    # Gap <= 15s between consecutive flagged rows, but total span > 90s -> splits slice
+    rows = [
+        _row(1, 0.0, 5.0),
+        _row(2, 18.0, 20.0),   # gap 13s, span 20s <= 90 -> same slice
+        _row(3, 33.0, 45.0),   # gap 13s, span 45s <= 90 -> same slice
+        _row(4, 58.0, 75.0),   # gap 13s, span 75s <= 90 -> same slice
+        _row(5, 88.0, 95.0),   # gap 13s, span 95s > 90 -> new slice!
+    ]
+    windows = build_audio_qc_windows(rows, flagged_ids={1, 2, 3, 4, 5}, deep_audio_qc=False)
+    assert len(windows) == 2
+    assert [r["id"] for r in windows[0]["batch"]] == [1, 2, 3, 4]
+    assert [r["id"] for r in windows[1]["batch"]] == [5]
+    # Hybrid mode uses +/-5 context window around batch
+    assert [r["id"] for r in windows[1]["context_window"]] == [1, 2, 3, 4, 5]
+
+    # Deep Audio QC clamps batch_size <= 0 to 1 and window_size < 0 to 0
+    many_rows = [_row(i, float(i), float(i) + 0.5) for i in range(1, 5)]
+    deep_clamped = build_audio_qc_windows(
+        many_rows, flagged_ids=set(), deep_audio_qc=True, batch_size=0, window_size=-3,
+    )
+    assert len(deep_clamped) == 4
+    assert [r["id"] for r in deep_clamped[1]["batch"]] == [2]
+    assert [r["id"] for r in deep_clamped[1]["context_window"]] == [2]
+
+    deep_normal = build_audio_qc_windows(
+        many_rows, flagged_ids=set(), deep_audio_qc=True, batch_size=2, window_size=1,
+    )
+    assert len(deep_normal) == 2
+    assert [r["id"] for r in deep_normal[0]["batch"]] == [1, 2]
+    assert [r["id"] for r in deep_normal[0]["context_window"]] == [1, 2, 3]
+    assert [r["id"] for r in deep_normal[1]["batch"]] == [3, 4]
+    assert [r["id"] for r in deep_normal[1]["context_window"]] == [2, 3, 4]
+
+
+def test_build_audio_qc_user_prompt_includes_glossary_context_and_relative_times():
+    batch = [_row(2, 10.5, 12.25, ja=None, id_text="Halo")]
+    ctx = [
+        _row(1, 8.0, 9.5, ja="前", id_text="Sebelumnya"),
+        batch[0],
+        _row(3, 13.0, 14.0, ja="次", id_text="Berikutnya"),
+    ]
+    prompt = build_audio_qc_user_prompt(
+        batch, ctx, slice_start=9.0, glossary={"人狼": "Manusia Serigala"},
+    )
+    assert "人狼 -> Manusia Serigala" in prompt
+    assert "[1] 8.00-9.50s | 前 | Sebelumnya" in prompt
+    assert "detik 9.00 video asli" in prompt
+    assert '"start": 1.5' in prompt
+    assert '"end": 3.25' in prompt
+
+
+def test_apply_audio_qc_results_applies_ja_timing_and_split():
+    batch = [
+        _row(1, 10.0, 12.0, ja="間違えた", id_text="Salah"),
+        _row(2, 13.0, 17.0, ja="A B C D", id_text="Empat orang"),
+    ]
+    qc_items = [
+        {
+            "id": 1,
+            "fixed_ja": "正しい日本語",
+            "fixed_id_text": "Jepang yang benar",
+            "fixed_start": 2.0,   # relative to slice_start=8.5 -> 10.5
+            "fixed_end": 4.0,     # -> 12.5
+            "reason": "Perbaiki ja dan geser timing",
+        },
+        {
+            "id": 2,
+            "split": [
+                {"start": 4.5, "end": 6.0, "ja": "- A\n- B", "id_text": "- A\n- B"},
+                {"start": 6.2, "end": 8.2, "ja": "- C\n- D", "id_text": "- C\n- D"},
+            ],
+            "reason": "Pecah 4 pembicara",
+        },
+    ]
+    fixed, issues = apply_audio_qc_results(batch, qc_items, slice_start=8.5, slice_duration=10.0)
+    assert len(fixed) == 3
+    assert fixed[0]["ja"] == "正しい日本語"
+    assert fixed[0]["id_text"] == "Jepang yang benar"
+    assert fixed[0]["start"] == pytest.approx(10.5)
+    assert fixed[0]["end"] == pytest.approx(12.5)
+    assert fixed[1]["ja"] == "- A\n- B"
+    assert fixed[1]["start"] == pytest.approx(13.0)
+    assert fixed[2]["start"] == pytest.approx(14.7)
+    types = {i["type"] for i in issues}
+    assert {"ja", "translation", "timing", "split"} <= types
+
+
+def test_apply_audio_qc_results_rejects_invalid_timestamps_splits_and_types():
+    nar_row = {"id": 1, "start": 10.0, "end": 12.0, "type": "narration", "ja": "元の文", "id_text": "Awal"}
+    bad_type_row = {"id": 2, "start": 12.5, "end": 14.5, "type": "WEIRD", "ja": "二人", "id_text": "Dua"}
+    rows = [nar_row, bad_type_row, _row(3, 15.0, 17.0, ja="三人目", id_text="Tiga")]
+
+    qc_items = [
+        # Row 1: out-of-range timing + invalid split (only 1 valid part survives) + non-str fixed_ja
+        {
+            "id": 1,
+            "fixed_ja": True,
+            "fixed_id_text": 999,
+            "fixed_start": 1.0,
+            "fixed_end": 25.0,   # > slice_duration (10.0) + 0.5
+            "split": [
+                {"start": 1.0, "end": 2.0, "ja": "A", "id_text": "A"},
+                {"start": -1.0, "end": 3.0, "ja": "B", "id_text": "B"},  # < 0.0 invalid
+            ],
+            "reason": "Test invalid",
+        },
+        # Row 2: valid split with weird source type -> normalized to "dialogue"; 5th item ignored
+        {
+            "id": 2,
+            "split": [
+                {"start": 4.0, "end": 4.5, "ja": "一", "id_text": "Satu"},
+                {"start": 4.6, "end": 5.0, "ja": "二", "id_text": "Dua"},
+                {"start": 5.1, "end": 5.5, "ja": "三", "id_text": "Tiga"},
+                {"start": 5.6, "end": 6.0, "ja": "四", "id_text": "Empat"},
+                {"start": 6.1, "end": 6.5, "ja": "五", "id_text": "Lima"},
+            ],
+            "reason": "Pecah 4",
+        },
+        # Row 3: bool timestamp + empty split list
+        {
+            "id": 3,
+            "fixed_start": True,
+            "fixed_end": 8.0,
+            "split": [],
+            "reason": "Bool timing",
+        },
+        # Invalid entries that must be ignored safely
+        "bad-entry",
+        {"id": True, "fixed_ja": "X"},
+    ]
+    fixed, issues = apply_audio_qc_results(rows, qc_items, slice_start=8.5, slice_duration=10.0)
+    # Row 1 kept untouched (1) + Row 2 split into 4 (4) + Row 3 kept untouched (1) = 6
+    assert len(fixed) == 6
+    assert fixed[0]["ja"] == "元の文"
+    assert fixed[0]["id_text"] == "Awal"
+    assert fixed[0]["start"] == 10.0
+    assert fixed[0]["end"] == 12.0
+    assert all(r["type"] == "dialogue" for r in fixed[1:5])
+    assert fixed[5]["start"] == 15.0 and fixed[5]["end"] == 17.0
+    warnings = [i for i in issues if i["type"] == "warning"]
+    # Row 1 invalid split + Row 1 out-of-range timing + Row 3 empty split + Row 3 bool timing
+    assert len(warnings) >= 4
+    # Caller input untouched
+    assert rows[0]["ja"] == "元の文"
+
+
+def test_run_qc_all_hybrid_skips_audio_when_zero_flags(tmp_path):
+    rows = [_row(1, 1.0, 3.0, ja="おはよう", id_text="Selamat pagi")]
+    text_calls = []
+    audio_calls = []
+
+    def fake_text(system, user):
+        text_calls.append(1)
+        return LLMResponse(text="[]", input_tokens=5, output_tokens=2), "gemini-3.6-flash"
+
+    def fake_audio(path, system, user):
+        audio_calls.append(1)
+        return LLMResponse(text="[]", input_tokens=5, output_tokens=2), "gemini-3.6-flash"
+
+    class T:
+        def add(self, *a):
+            pass
+
+    fixed, report = run_qc_all(
+        None, rows, audio_path=None, tmp_dir=tmp_path / "qc_tmp",
+        system="SYS", tracker=T(),
+        text_runner=fake_text, audio_runner=fake_audio,
+        deep_audio_qc=False,
+    )
+    assert len(text_calls) == 1
+    assert len(audio_calls) == 0
+    assert report["mode"] == "text_only"
+    assert report["summary"]["audio_slices_checked"] == 0
+    assert fixed[0]["id"] == 1
+
+
+def test_run_qc_all_translation_only_runs_pass1a_and_pass1b_and_counts_unresolved_flags(tmp_path):
+    rows = [
+        _row(1, 0.0, 2.0, ja="あ", id_text="Halo saya mau makan"),     # pronoun_violation (non-acoustic)
+        _row(2, 2.5, 4.5, ja="変な日本語", id_text="Aneh nih"),
+    ]
+    audio_calls = []
+
+    def fake_text(system, user):
+        assert "pronoun_violation" in user
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 1, "fixed_id_text": "Halo aku mau makan", "needs_audio_check": False, "reason": "Pronoun"},
+                {"id": 2, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek audio nanti"},
+            ]),
+            input_tokens=15, output_tokens=8,
+        ), "gpt-4.1"
+
+    def fake_audio(path, system, user):
+        audio_calls.append(1)
+        return LLMResponse(text="[]", input_tokens=5, output_tokens=2), "gemini-3.6-flash"
+
+    fixed, report = run_qc_all(
+        None, rows, audio_path=None, tmp_dir=tmp_path / "qc_tmp",
+        system="SYS", tracker=None,
+        text_runner=fake_text, audio_runner=fake_audio,
+        deep_audio_qc=True,  # still skipped because audio_path is None
+    )
+    assert len(audio_calls) == 0
+    assert report["mode"] == "text_only"
+    assert report["summary"]["audio_slices_checked"] == 0
+    assert report["summary"]["translation_fixes"] == 1
+    assert report["summary"]["unresolved_warnings"] == 1  # audio_flag on id=2 was NOT checked
+    assert fixed[0]["id_text"] == "Halo aku mau makan"
+
+
+def test_run_qc_all_deep_audio_qc_processes_all_batches_and_reindexes_splits(tmp_path, monkeypatch):
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"mp3")
+    monkeypatch.setattr("app.qc.audio.detect_silences", lambda p, db: [])
+    cut_calls = []
+
+    def fake_cut(src, dst, start, end):
+        cut_calls.append((start, end))
+        dst.write_bytes(b"slice")
+
+    monkeypatch.setattr("app.qc.audio.cut_chunk", fake_cut)
+
+    rows = [
+        _row(10, 5.0, 7.0, ja="元の文", id_text="Lama 1"),
+        _row(20, 8.0, 12.0, ja="A B C", id_text="Tiga orang"),
+        _row(30, 15.0, 17.0, ja="大丈夫", id_text="Aman"),
+    ]
+    audio_calls = []
+    progress_calls = []
+    tracker_calls = []
+
+    class T:
+        def add(self, m, i, o):
+            tracker_calls.append((m, i, o))
+
+    def fake_text(system, user):
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 20, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek audio"},
+            ]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.6-flash"
+
+    def fake_audio(slice_p, system, user):
+        assert slice_p.exists()
+        audio_calls.append(user)
+        if len(audio_calls) == 1:
+            # slice_start = 5.0 - 1.5 = 3.5
+            return LLMResponse(
+                text=json.dumps([
+                    {
+                        "id": 10,
+                        "fixed_ja": "正しい",
+                        "fixed_id_text": "Benar",
+                        "fixed_start": 1.0,  # -> 4.5
+                        "fixed_end": 3.0,    # -> 6.5
+                        "reason": "Perbaikan audio",
+                    },
+                    {
+                        "id": 20,
+                        "split": [
+                            {"start": 4.5, "end": 6.0, "ja": "- A\n- B", "id_text": "- A\n- B"},
+                            {"start": 6.2, "end": 8.0, "ja": "C", "id_text": "C"},
+                        ],
+                        "reason": "Split speaker",
+                    },
+                ]),
+                input_tokens=30, output_tokens=15,
+            ), "gemini-3.5-flash"
+        return LLMResponse(text="[]", input_tokens=20, output_tokens=5), "gemini-3.5-flash"
+
+    tmp_dir = tmp_path / "qc_tmp"
+    fixed, report = run_qc_all(
+        None, rows, audio_path=audio_path, tmp_dir=tmp_dir,
+        system="SYS", tracker=T(),
+        batch_size=2, window_size=1,
+        on_batch=lambda d, tot: progress_calls.append((d, tot)),
+        deep_audio_qc=True,
+        text_runner=fake_text, audio_runner=fake_audio,
+    )
+    assert len(cut_calls) == 2
+    assert len(audio_calls) == 2
+    assert progress_calls == [(1, 2), (2, 2)]
+    assert [r["id"] for r in fixed] == [1, 2, 3, 4]
+    assert fixed[0]["ja"] == "正しい"
+    assert fixed[0]["start"] == pytest.approx(4.5)
+    assert fixed[1]["ja"] == "- A\n- B"
+    assert fixed[2]["ja"] == "C"
+    assert fixed[3]["id_text"] == "Aman"
+    assert report["mode"] == "deep"
+    assert report["deep_audio_qc"] is True
+    assert report["summary"]["total_rows"] == 4
+    assert report["summary"]["audio_slices_checked"] == 2
+    assert report["summary"]["ja_fixes"] == 1
+    assert report["summary"]["translation_fixes"] == 1
+    assert report["summary"]["timing_fixes"] == 1
+    assert report["summary"]["splits"] == 1
+    # Row 20's Pass 1B audio_flag WAS checked in Pass 2 -> 0 unresolved!
+    assert report["summary"]["unresolved_warnings"] == 0
+    # Temp slices cleaned up
+    assert list(tmp_dir.glob("qc_slice_*.mp3")) == []
+    assert len(tracker_calls) == 3
+
+
+def test_run_qc_all_pass2_checkpoints_json_retry_fallback_and_api_error(tmp_path, monkeypatch):
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"mp3")
+    monkeypatch.setattr("app.qc.audio.detect_silences", lambda p, db: [])
+    monkeypatch.setattr("app.qc.audio.cut_chunk", lambda src, dst, s, e: dst.write_bytes(b"slice"))
+
+    rows = [
+        _row(1, 2.0, 4.0, ja="元の", id_text="Satu"),
+        _row(2, 60.0, 62.0, ja="二番", id_text="Dua"),
+    ]
+    ckpt_dir = tmp_path / "chunks"
+    tmp_dir = tmp_path / "qc_tmp"
+    tracker_calls = []
+
+    class T:
+        def add(self, m, i, o):
+            tracker_calls.append((m, i, o))
+
+    def fake_text(system, user):
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 1, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek 1"},
+                {"id": 2, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek 2"},
+            ]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.6-flash"
+
+    # Case A: Slice 0 retries bad JSON and recovers; Slice 1 fails JSON twice -> warning fallback
+    slice_calls = {0: 0, 1: 0}
+
+    def flaky_audio(slice_p, system, user):
+        idx = 0 if "qc_slice_000" in slice_p.name else 1
+        slice_calls[idx] += 1
+        if idx == 0:
+            if slice_calls[0] == 1:
+                return LLMResponse(text="not-json", input_tokens=10, output_tokens=2), "gemini-3.5-flash"
+            assert user.startswith("Output sebelumnya SALAH (")
+            return LLMResponse(
+                text=json.dumps([{"id": 1, "fixed_ja": "修正済", "reason": "Recovered"}]),
+                input_tokens=12, output_tokens=4,
+            ), "gemini-3.5-flash"
+        return LLMResponse(text="{}" if "SALAH" in user else "bad", input_tokens=8, output_tokens=2), "gemini-3.5-flash"
+
+    fixed1, report1 = run_qc_all(
+        None, rows, audio_path=audio_path, tmp_dir=tmp_dir,
+        system="SYS", tracker=T(),
+        text_runner=fake_text, audio_runner=flaky_audio,
+        checkpoint_dir=ckpt_dir,
+    )
+    assert slice_calls == {0: 2, 1: 2}
+    assert fixed1[0]["ja"] == "修正済"
+    assert fixed1[1]["ja"] == "二番"
+    assert report1["summary"]["ja_fixes"] == 1
+    assert report1["summary"]["unresolved_warnings"] == 1  # warning from slice 1 parse failure
+    assert (ckpt_dir / "qc_pass1.json").exists()
+    assert (ckpt_dir / "qc_audio_000.json").exists()
+    assert (ckpt_dir / "qc_audio_001.json").exists()
+    assert list(tmp_dir.glob("qc_slice_*.mp3")) == []
+
+    # Case B: Resume skips both Pass 1B and Pass 2 checkpoints without calling runners
+    def fail_runner(*a, **kw):
+        raise AssertionError("runners must not be called when checkpoints are valid")
+
+    fixed2, report2 = run_qc_all(
+        None, rows, audio_path=audio_path, tmp_dir=tmp_dir,
+        system="SYS", tracker=T(),
+        text_runner=fail_runner, audio_runner=fail_runner,
+        checkpoint_dir=ckpt_dir,
+    )
+    assert fixed2 == fixed1
+    assert report2 == report1
+
+    # Case C: Corrupt slice 1 checkpoint triggers recompute only for slice 1;
+    # API error on slice 1 propagates without writing checkpoint or leaving temp slice
+    corrupt_payloads = [
+        "{bad-json",
+        json.dumps(["not", "dict"]),
+        json.dumps({"batch_ids": [True], "fixed": [rows[1]], "issues": []}),
+        json.dumps({"batch_ids": [99], "fixed": [rows[1]], "issues": []}),
+        json.dumps({"batch_ids": [2], "fixed": [], "issues": []}),
+        json.dumps({"batch_ids": [2], "fixed": [{**rows[1], "start": True}], "issues": []}),
+        json.dumps({"batch_ids": [2], "fixed": [rows[1]], "issues": "bad"}),
+    ]
+    for bad in corrupt_payloads:
+        (ckpt_dir / "qc_audio_001.json").write_text(bad, encoding="utf-8")
+
+        def api_boom(slice_p, system, user):
+            assert slice_p.exists()
+            raise RuntimeError("503 audio backend busy")
+
+        with pytest.raises(RuntimeError, match="503 audio backend busy"):
+            run_qc_all(
+                None, rows, audio_path=audio_path, tmp_dir=tmp_dir,
+                system="SYS", tracker=T(),
+                text_runner=fail_runner, audio_runner=api_boom,
+                checkpoint_dir=ckpt_dir,
+            )
+        assert list(tmp_dir.glob("qc_slice_*.mp3")) == []
+        assert (ckpt_dir / "qc_audio_001.json").read_text(encoding="utf-8") == bad
+
+
+def test_save_and_load_qc_structured_report(tmp_path):
+    rows = [_row(1, 0.0, 1.0)]
+    report = {"mode": "hybrid", "deep_audio_qc": False, "summary": {"total_rows": 1}, "issues": []}
+    save_qc(rows, report, tmp_path)
+    assert load_qc(tmp_path) == rows
+    disk_report = json.loads((tmp_path / "qc" / "report.json").read_text(encoding="utf-8"))
+    assert disk_report["mode"] == "hybrid"
+
+    # Legacy list[dict] issues compatibility
+    legacy_dir = tmp_path / "legacy"
+    save_qc(rows, [{"id": 1, "type": "translation", "original": "A", "fixed": "B"}], legacy_dir)
+    assert load_qc(legacy_dir) == rows
+    legacy_report = json.loads((legacy_dir / "qc" / "report.json").read_text(encoding="utf-8"))
+    assert legacy_report["summary"]["translation_fixes"] == 1
+    assert legacy_report["issues"][0]["fixed"] == "B"
+
+
+def test_run_qc_all_hybrid_routes_only_acoustic_flags_and_ignores_context_hallucinations(tmp_path, monkeypatch):
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"mp3")
+    monkeypatch.setattr("app.qc.audio.detect_silences", lambda p, db: [Silence(10.0, 12.8)])
+    monkeypatch.setattr("app.qc.audio.cut_chunk", lambda src, dst, s, e: dst.write_bytes(b"slice"))
+
+    rows = [
+        _row(1, 1.0, 2.5, ja="おはよう", id_text="Halo saya makan"),      # non-acoustic only: pronoun_violation
+        _row(2, 11.0, 12.5, ja="どうした", id_text="Kenapa?"),            # acoustic: in_silence
+        _row(3, 13.0, 14.5, ja="大丈夫", id_text="Aman saja"),             # clean (in context_window for row 2!)
+    ]
+    audio_prompts = []
+
+    def fake_text(system, user):
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 1, "fixed_id_text": "Halo aku makan", "needs_audio_check": False, "reason": "Pronoun"},
+            ]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.6-flash"
+
+    def fake_audio(slice_p, system, user):
+        audio_prompts.append(user)
+        # Hallucinates an edit for context-only id=3 and id=1, plus real fix for id=2
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 1, "fixed_ja": "HALLUCINATED-1"},
+                {"id": 2, "fixed_ja": "どうしたの？", "fixed_id_text": "Ada apa?", "reason": "Lebih jelas"},
+                {"id": 3, "fixed_id_text": "HALLUCINATED-3"},
+            ]),
+            input_tokens=20, output_tokens=8,
+        ), "gemini-3.5-flash"
+
+    fixed, report = run_qc_all(
+        None, rows, audio_path=audio_path, tmp_dir=tmp_path / "qc_tmp",
+        system="SYS", tracker=None,
+        text_runner=fake_text, audio_runner=fake_audio,
+        deep_audio_qc=False,
+    )
+    assert len(audio_prompts) == 1
+    assert report["mode"] == "hybrid"
+    assert report["summary"]["local_flags"] == 2
+    assert report["summary"]["audio_slices_checked"] == 1
+    assert fixed[0]["ja"] == "おはよう"
+    assert fixed[0]["id_text"] == "Halo aku makan"
+    assert fixed[1]["ja"] == "どうしたの？"
+    assert fixed[1]["id_text"] == "Ada apa?"
+    assert fixed[2]["id_text"] == "Aman saja"
+
+
+def test_run_qc_all_partial_resume_empty_rows_and_default_gemini_client(tmp_path, monkeypatch):
+    # Empty rows -> zero calls, structured empty report
+    assert run_qc_all(
+        None, [], audio_path=None, tmp_dir=tmp_path / "empty",
+        system="SYS", tracker=None,
+    ) == ([], {
+        "mode": "text_only",
+        "deep_audio_qc": False,
+        "summary": {
+            "total_rows": 0,
+            "local_flags": 0,
+            "audio_slices_checked": 0,
+            "translation_fixes": 0,
+            "ja_fixes": 0,
+            "timing_fixes": 0,
+            "splits": 0,
+            "unresolved_warnings": 0,
+        },
+        "issues": [],
+    })
+
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"mp3")
+    monkeypatch.setattr("app.qc.audio.detect_silences", lambda p, db: [])
+    monkeypatch.setattr("app.qc.audio.cut_chunk", lambda src, dst, s, e: dst.write_bytes(b"slice"))
+
+    # Unsorted input + equal-start tie-breaking + partial resume
+    rows = [
+        _row(20, 60.0, 62.0, ja="二", id_text="Dua"),
+        _row(10, 5.0, 7.0, ja="一", id_text="Satu"),
+    ]
+    ckpt_dir = tmp_path / "chunks"
+    tmp_dir = tmp_path / "qc_tmp"
+    calls = []
+
+    def text_ok(system, user):
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 10, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek 10"},
+                {"id": 20, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek 20"},
+            ]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.6-flash"
+
+    def fail_second_slice(slice_p, system, user):
+        calls.append(slice_p.name)
+        if len(calls) == 1:
+            return LLMResponse(
+                text=json.dumps([{"id": 10, "fixed_ja": "一修正", "reason": "Ok"}]),
+                input_tokens=10, output_tokens=5,
+            ), "gemini-3.5-flash"
+        raise RuntimeError("503 slice 2")
+
+    with pytest.raises(RuntimeError, match="503 slice 2"):
+        run_qc_all(
+            None, rows, audio_path=audio_path, tmp_dir=tmp_dir,
+            system="SYS", tracker=None,
+            text_runner=text_ok, audio_runner=fail_second_slice,
+            checkpoint_dir=ckpt_dir,
+        )
+    assert (ckpt_dir / "qc_pass1.json").exists()
+    assert (ckpt_dir / "qc_audio_000.json").exists()
+    assert not (ckpt_dir / "qc_audio_001.json").exists()
+
+    # Retry resumes slice 0 and only runs slice 1
+    retry_calls = []
+
+    def finish_second_slice(slice_p, system, user):
+        retry_calls.append(slice_p.name)
+        return LLMResponse(
+            text=json.dumps([{"id": 20, "fixed_ja": "二修正", "reason": "Ok 2"}]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.5-flash"
+
+    fixed, report = run_qc_all(
+        None, rows, audio_path=audio_path, tmp_dir=tmp_dir,
+        system="SYS", tracker=None,
+        text_runner=lambda s, u: (_ for _ in ()).throw(AssertionError("Pass 1B must resume")),
+        audio_runner=finish_second_slice,
+        checkpoint_dir=ckpt_dir,
+    )
+    assert retry_calls == ["qc_slice_001.mp3"]
+    assert [r["id"] for r in fixed] == [1, 2]
+    assert [r["ja"] for r in fixed] == ["一修正", "二修正"]
+    assert report["summary"]["ja_fixes"] == 2
+    assert report["summary"]["unresolved_warnings"] == 0
+
+    # Default gemini client path (no custom runners)
+    class FakeGemini:
+        model = "gemini-3.5-flash"
+
+        def __init__(self):
+            self.uploads = 0
+            self.gen_calls = 0
+
+        def upload_audio(self, path):
+            self.uploads += 1
+            return f"ref:{path.name}"
+
+        def generate(self, system, user, audio=None):
+            self.gen_calls += 1
+            if audio is None:
+                return LLMResponse(
+                    text=json.dumps([{"id": 1, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek"}]),
+                    input_tokens=5, output_tokens=2,
+                )
+            return LLMResponse(
+                text=json.dumps([{"id": 1, "fixed_ja": "直った", "reason": "Audio fix"}]),
+                input_tokens=15, output_tokens=6,
+            )
+
+    gem = FakeGemini()
+    fixed_gem, report_gem = run_qc_all(
+        gem, [_row(1, 1.0, 2.0, ja="前", id_text="Awal")],
+        audio_path=audio_path, tmp_dir=tmp_dir,
+        system="SYS", tracker=None,
+    )
+    assert gem.uploads == 1
+    assert gem.gen_calls == 2
+    assert fixed_gem[0]["ja"] == "直った"
+    assert report_gem["summary"]["ja_fixes"] == 1
+
