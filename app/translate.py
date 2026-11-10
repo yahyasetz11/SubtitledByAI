@@ -7,7 +7,8 @@ import re
 from app.providers import call_with_retries
 from app.transcribe import Utterance
 
-BATCH_SIZE = 100  # merged utterances per request (spec: "per chunk"; see plan notes)
+BATCH_SIZE = 100
+MAX_GLOSSARY_TERMS = 80
 
 
 class TranslateError(Exception):
@@ -17,29 +18,79 @@ class TranslateError(Exception):
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
 
 
-def parse_translation(text: str) -> dict[int, str]:
-    """Model output -> {id: id_text}. Tolerates fences and wrapper dicts."""
+def merge_glossary(base: dict[str, str], additions: dict[str, str],
+                   limit: int = MAX_GLOSSARY_TERMS) -> dict[str, str]:
+    """Merge new JP->ID terms into base, keeping at most `limit` entries."""
+    merged = dict(base)
+    for k, v in (additions or {}).items():
+        if k is None or v is None or isinstance(v, (dict, list, bool)):
+            continue
+        jp = str(k).strip()
+        id_val = str(v).strip()
+        if jp and id_val:
+            if jp in merged:
+                del merged[jp]
+            merged[jp] = id_val
+    cap = max(0, limit)
+    while len(merged) > cap:
+        oldest = next(iter(merged))
+        del merged[oldest]
+    return merged
+
+
+def parse_translation_response(text: str) -> tuple[dict[int, str], dict[str, str]]:
+    """Parse model output -> ({id: id_text}, {jp_term: id_term}).
+
+    Accepts both {"translations": [...], "new_terms": {...}} and plain JSON arrays.
+    """
     cleaned = _FENCE_RE.sub("", text.strip())
     data = json.loads(cleaned)
+    raw_terms: dict[str, str] = {}
+    items = None
+
     if isinstance(data, dict):
-        for value in data.values():
-            if isinstance(value, list):
-                data = value
-                break
-    if not isinstance(data, list):
+        if isinstance(data.get("new_terms"), dict):
+            for k, v in data["new_terms"].items():
+                if k is None or v is None or isinstance(v, (dict, list, bool)):
+                    continue
+                jp, id_val = str(k).strip(), str(v).strip()
+                if jp and id_val:
+                    raw_terms[jp] = id_val
+        if isinstance(data.get("translations"), list):
+            items = data["translations"]
+        else:
+            for value in data.values():
+                if isinstance(value, list):
+                    items = value
+                    break
+    elif isinstance(data, list):
+        items = data
+
+    if not isinstance(items, list):
         raise ValueError("output bukan array JSON")
+
     result: dict[int, str] = {}
-    for item in data:
+    for item in items:
         if not isinstance(item, dict):
             continue
         try:
-            item_id = int(item["id"])
-            id_text = str(item["id_text"]).strip()
+            raw_id = item["id"]
+            raw_text = item["id_text"]
+            if raw_id is None or isinstance(raw_id, bool) or raw_text is None:
+                continue
+            item_id = int(raw_id)
+            id_text = str(raw_text).strip()
         except (KeyError, TypeError, ValueError):
             continue
         if id_text:
             result[item_id] = id_text
-    return result
+    return result, raw_terms
+
+
+def parse_translation(text: str) -> dict[int, str]:
+    """Backward-compatible wrapper returning only {id: id_text}."""
+    mapping, _ = parse_translation_response(text)
+    return mapping
 
 
 def validate_alignment(mapping: dict[int, str],
@@ -72,15 +123,41 @@ def build_translate_system(context_md: str, members_md: str,
 
 
 def _build_user_prompt(utterances: list[Utterance],
-                       error_feedback: str | None = None) -> str:
+                       error_feedback: str | None = None,
+                       glossary: dict[str, str] | None = None,
+                       include_terms: bool = True) -> str:
     payload = json.dumps([{"id": u.id, "ja": u.ja} for u in utterances],
                          ensure_ascii=False)
+    glossary_block = ""
+    if glossary:
+        lines = "\n".join(f"- {jp} -> {id_val}" for jp, id_val in glossary.items())
+        glossary_block = (
+            "=== GLOSARIUM EPISODE (WAJIB KONSISTEN) ===\n"
+            + lines + "\n\n"
+        )
+    if include_terms:
+        schema_instr = (
+            "Balas HANYA JSON dengan format:\n"
+            '{"translations": [{"id": <id sama>, "id_text": "<terjemahan>"}], '
+            '"new_terms": {"<istilah/segmen JP berulang baru>": "<padanan ID konsisten>"}}\n'
+            "Catatan:\n"
+            "- Jumlah item di 'translations' HARUS SAMA PERSIS dengan id input.\n"
+            "- Jika baris 'ja' memiliki format 2 pembicara diawali '- ', pertahankan format dua baris '- ' di id_text.\n"
+            "- Isi 'new_terms' hanya untuk nama segmen, permainan, julukan, atau istilah berulang baru (boleh {}).\n"
+        )
+    else:
+        schema_instr = (
+            "Balas HANYA array JSON dengan id yang SAMA PERSIS dan jumlah item "
+            "yang SAMA PERSIS, format per item: "
+            '{"id": <id sama>, "id_text": "<terjemahan>"}.\n'
+            "Jika baris 'ja' memiliki format 2 pembicara diawali '- ', "
+            "pertahankan format dua baris '- ' di id_text.\n"
+        )
     prompt = (
-        "Terjemahkan tiap item berikut ke Bahasa Indonesia sesuai style guide.\n"
-        "Balas HANYA array JSON dengan id yang SAMA PERSIS dan jumlah item "
-        "yang SAMA PERSIS, format per item: "
-        '{"id": <id sama>, "id_text": "<terjemahan>"}.\n'
-        "Jangan menggabung, memecah, menambah, atau membuang item.\n\n" + payload
+        glossary_block
+        + "Terjemahkan tiap item berikut ke Bahasa Indonesia sesuai style guide.\n"
+        + schema_instr
+        + "Jangan menggabung, memecah, menambah, atau membuang item.\n\n" + payload
     )
     if error_feedback:
         prompt = (f"Output sebelumnya SALAH ({error_feedback}). Perbaiki dan "
@@ -89,65 +166,129 @@ def _build_user_prompt(utterances: list[Utterance],
 
 
 def _request_mapping(client, utterances, system, tracker,
-                     error_feedback=None) -> dict[int, str]:
-    response = call_with_retries(
-        lambda: client.generate(system=system,
-                                user=_build_user_prompt(utterances,
-                                                        error_feedback)))
+                     error_feedback=None, glossary=None,
+                     text_runner=None) -> tuple[dict[int, str], dict[str, str]]:
+    user_prompt = _build_user_prompt(
+        utterances, error_feedback=error_feedback,
+        glossary=glossary, include_terms=len(utterances) > 1,
+    )
+    if text_runner is not None:
+        response, model_used = text_runner(system, user_prompt)
+    else:
+        response = call_with_retries(
+            lambda: client.generate(system=system, user=user_prompt))
+        model_used = client.model
     if tracker is not None:
-        tracker.add(client.model, response.input_tokens, response.output_tokens)
+        tracker.add(model_used, response.input_tokens, response.output_tokens)
     try:
-        return parse_translation(response.text)
+        return parse_translation_response(response.text)
     except (json.JSONDecodeError, ValueError):
-        return {}
+        return {}, {}
 
 
 def translate_batch(client, utterances: list[Utterance], system: str,
-                    tracker) -> dict[int, str]:
+                    tracker, glossary: dict[str, str] | None = None,
+                    text_runner=None) -> dict[int, str]:
     expected_ids = [u.id for u in utterances]
 
-    mapping = _request_mapping(client, utterances, system, tracker)
+    mapping, new_terms = _request_mapping(
+        client, utterances, system, tracker,
+        glossary=glossary, text_runner=text_runner,
+    )
     error = validate_alignment(mapping, expected_ids)
     if error is None:
+        if glossary is not None and new_terms:
+            updated = merge_glossary(glossary, new_terms)
+            glossary.clear()
+            glossary.update(updated)
         return mapping
 
-    retry = _request_mapping(client, utterances, system, tracker,
-                             error_feedback=error)
+    retry, retry_terms = _request_mapping(
+        client, utterances, system, tracker,
+        error_feedback=error, glossary=glossary, text_runner=text_runner,
+    )
     if validate_alignment(retry, expected_ids) is None:
+        if glossary is not None and (new_terms or retry_terms):
+            updated = merge_glossary(glossary, {**new_terms, **retry_terms})
+            glossary.clear()
+            glossary.update(updated)
         return retry
+
     mapping = {**retry, **{k: v for k, v in mapping.items() if k not in retry}}
     mapping = {k: v for k, v in mapping.items() if k in set(expected_ids)}
 
-    # Granular fallback: only ids that are still missing, one by one (§9).
     by_id = {u.id: u for u in utterances}
     for missing_id in sorted(set(expected_ids) - set(mapping)):
-        single = _request_mapping(client, [by_id[missing_id]], system, tracker)
+        single, _ = _request_mapping(
+            client, [by_id[missing_id]], system, tracker,
+            glossary=glossary, text_runner=text_runner,
+        )
         if missing_id not in single:
             raise TranslateError(
                 f"Gagal menerjemahkan id={missing_id} "
                 f"({by_id[missing_id].ja[:40]}...) setelah fallback per-baris.")
         mapping[missing_id] = single[missing_id]
+
+    if glossary is not None and (new_terms or retry_terms):
+        updated = merge_glossary(glossary, {**new_terms, **retry_terms})
+        glossary.clear()
+        glossary.update(updated)
     return mapping
+
+
+def _unpack_checkpoint(raw) -> tuple[dict[int, str], dict[str, str]]:
+    if isinstance(raw, dict) and isinstance(raw.get("translations"), dict):
+        trans = {
+            int(k): str(v)
+            for k, v in raw["translations"].items()
+            if v is not None
+        }
+        gloss: dict[str, str] = {}
+        raw_gloss = raw.get("glossary")
+        if isinstance(raw_gloss, dict):
+            for k, v in raw_gloss.items():
+                if k is None or v is None or isinstance(v, (dict, list, bool)):
+                    continue
+                jp, id_val = str(k).strip(), str(v).strip()
+                if jp and id_val:
+                    gloss[jp] = id_val
+        return trans, gloss
+    if isinstance(raw, dict):
+        return {int(k): str(v) for k, v in raw.items() if v is not None}, {}
+    return {}, {}
 
 
 def translate_all(client, utterances: list[Utterance], system: str, tracker,
                   on_batch=None, load_checkpoint=None,
-                  save_checkpoint=None) -> dict[int, str]:
-    """Translate in BATCH_SIZE groups with optional per-batch checkpoints.
-
-    load_checkpoint(batch_index) -> dict | None
-    save_checkpoint(batch_index, mapping) -> None
-    on_batch(done_count, total_count) -> None   (progress callback)
-    """
+                  save_checkpoint=None, glossary: dict[str, str] | None = None,
+                  text_runner=None) -> dict[int, str]:
+    """Translate in BATCH_SIZE groups with optional per-batch checkpoints & glossary."""
     batches = [utterances[i:i + BATCH_SIZE]
                for i in range(0, len(utterances), BATCH_SIZE)]
     result: dict[int, str] = {}
+    active_glossary: dict[str, str] = glossary if glossary is not None else {}
+
     for idx, batch in enumerate(batches, start=1):
-        mapping = load_checkpoint(idx) if load_checkpoint else None
-        if mapping is None:
-            mapping = translate_batch(client, batch, system, tracker)
+        ckpt_raw = load_checkpoint(idx) if load_checkpoint else None
+        if ckpt_raw is not None:
+            mapping, ckpt_glossary = _unpack_checkpoint(ckpt_raw)
+            if ckpt_glossary:
+                merged = merge_glossary(active_glossary, ckpt_glossary)
+                active_glossary.clear()
+                active_glossary.update(merged)
+        else:
+            if glossary is None and text_runner is None:
+                mapping = translate_batch(client, batch, system, tracker)
+            else:
+                mapping = translate_batch(
+                    client, batch, system, tracker,
+                    glossary=active_glossary, text_runner=text_runner,
+                )
             if save_checkpoint:
-                save_checkpoint(idx, mapping)
+                save_checkpoint(idx, {
+                    "translations": mapping,
+                    "glossary": dict(active_glossary),
+                })
         result.update(mapping)
         if on_batch:
             on_batch(idx, len(batches))
