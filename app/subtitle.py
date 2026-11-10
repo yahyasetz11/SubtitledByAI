@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import re as _re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+def _dashed_line_count(text: str) -> int:
+    return sum(1 for ln in text.splitlines() if ln.lstrip().startswith("- "))
 
 
 def _count_speaker_turns(text: str) -> int:
-    dashed_lines = [ln for ln in text.splitlines() if ln.lstrip().startswith("- ")]
-    return max(1, len(dashed_lines))
+    return max(1, _dashed_line_count(text))
 
 
 @dataclass
@@ -16,7 +19,7 @@ class SubEvent:
     end: float
     text: str
     type: str = "dialogue"  # "dialogue" | "narration"
-    turns: int = 0
+    turns: int = field(default=0, compare=False)
 
     def __post_init__(self) -> None:
         if self.turns <= 0:
@@ -50,8 +53,8 @@ def _merge_short(events, min_duration, merge_gap, max_duration):
                               or ev.duration < min_duration)
             within_turn_cap = (prev.turns + ev.turns) <= 2
             has_dashed = (
-                any(ln.lstrip().startswith("- ") for ln in prev.text.splitlines())
-                or any(ln.lstrip().startswith("- ") for ln in ev.text.splitlines())
+                _dashed_line_count(prev.text) > 0
+                or _dashed_line_count(ev.text) > 0
             )
             if (gap < merge_gap and ev.type == prev.type and short_involved
                     and within_turn_cap and not has_dashed

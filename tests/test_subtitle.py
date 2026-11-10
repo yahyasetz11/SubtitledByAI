@@ -3,8 +3,8 @@ import pytest
 from app.subtitle import SubEvent, postprocess
 
 
-def E(start, end, text, type="dialogue"):
-    return SubEvent(start=start, end=end, text=text, type=type)
+def E(start, end, text, type="dialogue", turns=0):
+    return SubEvent(start=start, end=end, text=text, type=type, turns=turns)
 
 
 def run(events, **kw):
@@ -221,11 +221,62 @@ def test_render_ass_preserves_two_speaker_dashed_lines():
 
 def test_postprocess_stripping_preserves_turns():
     events, _ = run([
-        SubEvent(start=0.0, end=0.4, text="  Halo!  ", turns=2),
-        SubEvent(start=0.5, end=0.9, text="  Dunia!  "),
+        E(0.0, 0.4, "  Halo!  ", turns=2),
+        E(0.5, 0.9, "  Dunia!  "),
     ])
     assert len(events) == 2
     assert events[0].text == "Halo!"
     assert events[0].turns == 2
     assert events[1].text == "Dunia!"
     assert events[1].turns == 1
+
+
+def test_subevent_equality_ignores_turns():
+    assert E(0.0, 1.0, "Halo!", turns=1) == E(0.0, 1.0, "Halo!", turns=2)
+    assert E(0.0, 1.0, "Halo!", turns=2).turns == 2
+
+
+def test_merge_short_does_not_merge_single_line_dashed_cues():
+    events_first_dashed, _ = run([
+        E(0.0, 0.5, "- Eh!?"),
+        E(0.6, 1.0, "Serius?!"),
+    ])
+    assert len(events_first_dashed) == 2
+    assert events_first_dashed[0].text == "- Eh!?"
+    assert events_first_dashed[1].text == "Serius?!"
+
+    events_both_dashed, _ = run([
+        E(0.0, 0.5, "- Eh!?"),
+        E(0.6, 1.0, "- Serius?!"),
+    ])
+    assert len(events_both_dashed) == 2
+    assert events_both_dashed[0].text == "- Eh!?"
+    assert events_both_dashed[1].text == "- Serius?!"
+
+    events_second_dashed, _ = run([
+        E(0.0, 0.5, "Eh!?"),
+        E(0.6, 1.0, "- Serius?!"),
+    ])
+    assert len(events_second_dashed) == 2
+    assert events_second_dashed[0].text == "Eh!?"
+    assert events_second_dashed[1].text == "- Serius?!"
+
+
+def test_merge_short_merges_multiline_with_midline_hyphen():
+    events, _ = run([
+        E(0.0, 0.5, "Kata - pertama\nlanjutan"),
+        E(0.6, 1.0, "Oke"),
+    ])
+    assert len(events) == 1
+    assert events[0].text == "Kata - pertama\nlanjutan Oke"
+
+
+def test_merge_short_does_not_merge_two_speaker_dashed_block_second():
+    two_speaker = "- Eh!?\n- Serius?!"
+    events, _ = run([
+        E(0.0, 0.5, "Gila sih!"),
+        E(0.6, 1.2, two_speaker),
+    ])
+    assert len(events) == 2
+    assert events[0].text == "Gila sih!"
+    assert events[1].text == two_speaker
