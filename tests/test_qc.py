@@ -8,6 +8,8 @@ from app.qc import (
     ACOUSTIC_FLAG_REASONS,
     apply_text_qc_results,
     audit_local,
+    build_text_qc_user_prompt,
+    parse_qc_response,
     run_text_qc,
 )
 
@@ -317,7 +319,7 @@ def test_apply_text_qc_results_ignores_invalid_and_noop_fixes():
     assert rows[0]["id_text"] == "Teks satu"
 
 
-def test_run_text_qc_single_pass_and_windowed():
+def test_run_text_qc_single_pass():
     rows = [_row(i, float(i), float(i) + 0.9, ja="あ", id_text=f"Teks {i}") for i in range(1, 5)]
     calls = []
 
@@ -537,3 +539,273 @@ def test_run_text_qc_propagates_runner_error_without_checkpoint_or_charge(tmp_pa
         )
     assert tracker_calls == [("gemini-3.6-flash", 10, 5)]
     assert not ckpt.exists()
+
+
+def test_parse_qc_response_and_prompt_formatting():
+    with pytest.raises(ValueError, match="output kosong"):
+        parse_qc_response(None)
+    with pytest.raises(ValueError, match="output bukan array JSON"):
+        parse_qc_response("{}")
+    assert parse_qc_response('```json\n{"items": [{"id": 1}]}\n```') == [{"id": 1}]
+
+    rows = [
+        _row(1, 0.0, 1.5, ja="あ", id_text="Satu"),
+        _row(2, 1.5, 3.0, ja="い", id_text="Dua"),
+    ]
+    prompt = build_text_qc_user_prompt(
+        rows,
+        glossary={"あ": "A"},
+        audit_flags={1: [], 2: ["high_cps"]},
+        check_ids={2},
+    )
+    assert '"context_only": true' in prompt
+    items = _extract_prompt_items(prompt)
+    assert items[0]["context_only"] is True
+    assert "audit_flags" not in items[0]
+    assert "context_only" not in items[1]
+    assert items[1]["audit_flags"] == ["high_cps"]
+
+
+@pytest.mark.parametrize("bad_text", ["not-json", "{}", None])
+def test_run_text_qc_retries_corrupt_json_and_recovers(bad_text):
+    rows = [_row(1, 0.0, 2.0, ja="あ", id_text="Lama")]
+    prompts: list[str] = []
+    tracker_calls = []
+
+    class T:
+        def add(self, m, i, o):
+            tracker_calls.append((m, i, o))
+
+    def flaky_runner(system, user):
+        prompts.append(user)
+        if len(prompts) == 1:
+            return LLMResponse(text=bad_text, input_tokens=10, output_tokens=5), "gemini-3.6-flash"
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 1, "fixed_id_text": "Baru", "needs_audio_check": False, "reason": "Glosarium"},
+            ]),
+            input_tokens=12, output_tokens=6,
+        ), "gpt-4.1"
+
+    fixed, issues, audio_ids = run_text_qc(
+        rows, system="SYS", glossary={}, audit_flags={}, tracker=T(), text_runner=flaky_runner,
+    )
+    assert len(prompts) == 2
+    assert prompts[1].startswith("Output sebelumnya SALAH (")
+    assert "Balas HANYA array JSON sesuai skema." in prompts[1]
+    assert fixed[0]["id_text"] == "Baru"
+    assert audio_ids == set()
+    assert [i["type"] for i in issues] == ["translation"]
+    assert tracker_calls == [("gemini-3.6-flash", 10, 5), ("gpt-4.1", 12, 6)]
+
+
+def test_run_text_qc_second_parse_failure_warns_without_crashing_or_losing_prior_windows(tmp_path):
+    rows = [_row(1, 0.0, 2.0, ja="あ", id_text="Tetap")]
+    tracker_calls = []
+
+    class T:
+        def add(self, m, i, o):
+            tracker_calls.append((m, i, o))
+
+    def always_corrupt(system, user):
+        return LLMResponse(text="{}" if "SALAH" in user else "not-json", input_tokens=5, output_tokens=2), "gemini-3.6-flash"
+
+    fixed, issues, audio_ids = run_text_qc(
+        rows, system="SYS", glossary={}, audit_flags={}, tracker=T(), text_runner=always_corrupt,
+    )
+    assert fixed[0]["id_text"] == "Tetap"
+    assert audio_ids == set()
+    assert len(issues) == 1
+    assert issues[0]["pass"] == "text_qc"
+    assert issues[0]["type"] == "warning"
+    assert "Respons Pass 1B tidak valid" in issues[0]["reason"]
+    assert tracker_calls == [("gemini-3.6-flash", 5, 2), ("gemini-3.6-flash", 5, 2)]
+
+    # Multi-window: W1 succeeds, W2 fails twice -> W1 updates preserved + W2 warning added
+    rows_260 = [_row(i, float(i), float(i) + 0.9, ja="あ", id_text=f"Teks {i}") for i in range(1, 261)]
+    ckpt = tmp_path / "qc" / "text_qc.json"
+    w_calls = 0
+    w_tracker = []
+
+    class WT:
+        def add(self, m, i, o):
+            w_tracker.append((m, i, o))
+
+    def w1_ok_w2_bad(system, user):
+        nonlocal w_calls
+        w_calls += 1
+        if w_calls == 1:
+            return LLMResponse(
+                text=json.dumps([
+                    {"id": 1, "fixed_id_text": "Teks 1 Baru", "needs_audio_check": False, "reason": "Glosarium"},
+                    {"id": 2, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek audio"},
+                ]),
+                input_tokens=50, output_tokens=20,
+            ), "gemini-3.6-flash"
+        return LLMResponse(text=None if w_calls == 2 else "not-json", input_tokens=40, output_tokens=10), "gpt-4.1"
+
+    fixed_w, issues_w, audio_w = run_text_qc(
+        rows_260, system="SYS", glossary={}, audit_flags={}, tracker=WT(),
+        text_runner=w1_ok_w2_bad, checkpoint_path=ckpt,
+    )
+    assert w_calls == 3
+    assert fixed_w[0]["id_text"] == "Teks 1 Baru"
+    assert fixed_w[200]["id_text"] == "Teks 201"
+    assert audio_w == {2}
+    assert [i["type"] for i in issues_w] == ["translation", "audio_flag", "warning"]
+    assert "Respons Pass 1B tidak valid" in issues_w[2]["reason"]
+    assert w_tracker == [
+        ("gemini-3.6-flash", 50, 20),
+        ("gpt-4.1", 40, 10),
+        ("gpt-4.1", 40, 10),
+    ]
+    assert ckpt.exists()
+
+
+def test_run_text_qc_checkpoint_edge_cases_and_empty_rows(tmp_path):
+    rows = [
+        _row(1, 0.0, 2.0, ja="あ", id_text="Satu"),
+        _row(2, 2.0, 4.0, ja="い", id_text="Dua"),
+    ]
+    ckpt = tmp_path / "qc" / "text_qc.json"
+    calls = 0
+
+    def runner(system, user):
+        nonlocal calls
+        calls += 1
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 1, "fixed_id_text": "Satu Recomputed", "needs_audio_check": False, "reason": "Ok"},
+            ]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.6-flash"
+
+    # Empty rows must ignore stale checkpoint and skip runner
+    ckpt.parent.mkdir(parents=True, exist_ok=True)
+    ckpt.write_text(json.dumps({
+        "rows": [_row(1, 0.0, 1.0, id_text="Stale")],
+        "issues": [{"pass": "text_qc", "type": "translation"}],
+        "audio_ids": [1],
+    }), encoding="utf-8")
+    assert run_text_qc(
+        [], system="SYS", glossary={}, audit_flags={}, tracker=None,
+        text_runner=lambda s, u: (_ for _ in ()).throw(AssertionError("runner called on empty rows")),
+        checkpoint_path=ckpt,
+    ) == ([], [], set())
+
+    row_missing_start = dict(rows[0])
+    del row_missing_start["start"]
+    row_bool_start = dict(rows[0], start=True)
+    row_str_end = dict(rows[0], end="2.0")
+    row_none_end = dict(rows[0], end=None)
+
+    bad_checkpoints = [
+        # Matching count (2) but mismatched IDs
+        json.dumps({"rows": [_row(1, 0.0, 2.0), _row(3, 2.0, 4.0)], "issues": [], "audio_ids": []}),
+        # Matching count & set, wrong sequence
+        json.dumps({"rows": [rows[1], rows[0]], "issues": [], "audio_ids": []}),
+        # Missing / invalid start / end
+        json.dumps({"rows": [row_missing_start, rows[1]], "issues": [], "audio_ids": []}),
+        json.dumps({"rows": [row_bool_start, rows[1]], "issues": [], "audio_ids": []}),
+        json.dumps({"rows": [row_str_end, rows[1]], "issues": [], "audio_ids": []}),
+        json.dumps({"rows": [row_none_end, rows[1]], "issues": [], "audio_ids": []}),
+        '{"rows": [{"id": 1, "start": NaN, "end": 2.0}, {"id": 2, "start": 2.0, "end": 4.0}], "issues": [], "audio_ids": []}',
+        # audio_ids outside expected row IDs
+        json.dumps({"rows": rows, "issues": [], "audio_ids": [99]}),
+    ]
+    for payload in bad_checkpoints:
+        ckpt.write_text(payload, encoding="utf-8")
+        before = calls
+        fixed, issues, audio_ids = run_text_qc(
+            rows, system="SYS", glossary={}, audit_flags={}, tracker=None,
+            text_runner=runner, checkpoint_path=ckpt,
+        )
+        assert calls == before + 1
+        assert fixed[0]["id_text"] == "Satu Recomputed"
+        assert audio_ids == set()
+
+
+def test_apply_text_qc_results_merges_duplicate_items():
+    rows = [
+        _row(1, 0.0, 2.0, ja="あ", id_text="Lama 1"),
+        _row(2, 2.0, 4.0, ja="い", id_text="Lama 2"),
+    ]
+    qc_items = [
+        {"id": 1, "fixed_id_text": "Baru 1", "needs_audio_check": False, "reason": "Glosarium"},
+        {"id": " 1 ", "fixed_id_text": "", "needs_audio_check": True, "reason": "Audio aneh"},
+        {"id": 2, "fixed_id_text": "Draft 2", "needs_audio_check": True, "reason": "Cek audio"},
+        {"id": 2, "fixed_id_text": "Final 2", "needs_audio_check": False, "reason": "Style guide"},
+    ]
+    updated, issues, audio_ids = apply_text_qc_results(rows, qc_items)
+    assert updated[0]["id_text"] == "Baru 1"
+    assert updated[1]["id_text"] == "Final 2"
+    assert audio_ids == {1, 2}
+    assert len(issues) == 4
+    trans_1 = next(i for i in issues if i["id"] == 1 and i["type"] == "translation")
+    audio_1 = next(i for i in issues if i["id"] == 1 and i["type"] == "audio_flag")
+    assert trans_1["fixed"] == "Baru 1"
+    assert "Glosarium" in trans_1["reason"] and "Audio aneh" in trans_1["reason"]
+    assert "Audio aneh" in audio_1["reason"]
+
+
+def test_run_text_qc_duplicate_row_ids_window_boundary_and_nonsequential_ids(tmp_path):
+    dup_rows = [_row(1, 0.0, 1.0), _row(1, 1.0, 2.0)]
+    with pytest.raises(ValueError, match="duplikat"):
+        run_text_qc(
+            dup_rows, system="SYS", glossary={}, audit_flags={}, tracker=None,
+            text_runner=lambda s, u: (_ for _ in ()).throw(AssertionError("should not run")),
+        )
+
+    # 250 rows -> 1 window; 251 rows -> 2 windows
+    for count, expected_calls in [(250, 1), (251, 2)]:
+        batch_rows = [_row(i, float(i), float(i) + 0.9, ja="あ", id_text=f"Teks {i}") for i in range(1, count + 1)]
+        prompts: list[str] = []
+
+        def count_runner(system, user):
+            prompts.append(user)
+            return LLMResponse(text="[]", input_tokens=1, output_tokens=1), "gemini-3.6-flash"
+
+        run_text_qc(batch_rows, system="SYS", glossary={}, audit_flags={}, tracker=None, text_runner=count_runner)
+        assert len(prompts) == expected_calls
+        if count == 251:
+            w2_items = _extract_prompt_items(prompts[1])
+            assert [it["id"] for it in w2_items] == list(range(171, 252))
+            assert all(it.get("context_only") is True for it in w2_items[:30])
+            assert all("context_only" not in it for it in w2_items[30:])
+
+    # Non-sequential unique IDs [10, 25, 42]
+    sparse_rows = [
+        _row(10, 0.0, 1.5, ja="あ", id_text="Sepuluh"),
+        _row(25, 2.0, 3.5, ja="い", id_text="Dua Lima"),
+        _row(42, 4.0, 5.5, ja="う", id_text="Empat Dua"),
+    ]
+    ckpt = tmp_path / "qc" / "sparse_ckpt.json"
+    sparse_calls = 0
+
+    def sparse_runner(system, user):
+        nonlocal sparse_calls
+        sparse_calls += 1
+        return LLMResponse(
+            text=json.dumps([
+                {"id": 10, "fixed_id_text": "Sepuluh Baru", "needs_audio_check": False, "reason": "Fix"},
+                {"id": 42, "fixed_id_text": "", "needs_audio_check": True, "reason": "Cek"},
+            ]),
+            input_tokens=10, output_tokens=5,
+        ), "gemini-3.6-flash"
+
+    fixed_s, issues_s, audio_s = run_text_qc(
+        sparse_rows, system="SYS", glossary={}, audit_flags={}, tracker=None,
+        text_runner=sparse_runner, checkpoint_path=ckpt,
+    )
+    assert sparse_calls == 1
+    assert [r["id_text"] for r in fixed_s] == ["Sepuluh Baru", "Dua Lima", "Empat Dua"]
+    assert audio_s == {42}
+    assert len(issues_s) == 2
+
+    # Resume from sparse checkpoint
+    resumed = run_text_qc(
+        sparse_rows, system="SYS", glossary={}, audit_flags={}, tracker=None,
+        text_runner=lambda s, u: (_ for _ in ()).throw(AssertionError("should resume")),
+        checkpoint_path=ckpt,
+    )
+    assert resumed == (fixed_s, issues_s, audio_s)

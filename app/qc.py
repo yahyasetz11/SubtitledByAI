@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import replace
@@ -204,6 +205,8 @@ def build_qc_user_prompt(
 
 
 def parse_qc_response(text: str) -> list[dict]:
+    if text is None:
+        raise ValueError("output kosong")
     cleaned = _FENCE_RE.sub("", text.strip())
     data = json.loads(cleaned)
     if isinstance(data, dict):
@@ -244,8 +247,9 @@ def build_text_qc_user_prompt(
         }
         if check_ids is not None and rid not in check_ids:
             entry["context_only"] = True
-        if audit_flags and rid in audit_flags:
-            entry["audit_flags"] = audit_flags[rid]
+        flags = audit_flags.get(rid) if audit_flags else None
+        if flags:
+            entry["audit_flags"] = flags
         items.append(entry)
 
     return (
@@ -257,7 +261,8 @@ def build_text_qc_user_prompt(
         "1. Seragamkan terjemahan istilah berulang/segmen/nama acara di seluruh episode.\n"
         "2. Perbaiki style guide (pakai aku/kamu, tanpa sisa kana/kanji Jepang, ringkas baris >25 CPS).\n"
         "3. Pastikan maksimal 2 pembicara per baris (format '- Baris 1\\n- Baris 2').\n"
-        "4. Tandai needs_audio_check=true jika teks 'ja' tampak salah dengar, aneh secara konteks, atau bertumpuk 3+ pembicara.\n\n"
+        "4. Tandai needs_audio_check=true jika teks 'ja' tampak salah dengar, aneh secara konteks, atau bertumpuk 3+ pembicara.\n"
+        '5. Item dengan "context_only": true hanyalah konteks baca-saja dan JANGAN dikembalikan.\n\n'
         "Balas HANYA array JSON berisi item bermasalah saja (boleh [] jika semua baik):\n"
         '[{"id": <id>, "fixed_id_text": "<terjemahan baru atau string kosong>", '
         '"needs_audio_check": true|false, "reason": "<alasan singkat>"}]'
@@ -265,14 +270,18 @@ def build_text_qc_user_prompt(
 
 
 def _safe_item_id(raw_id) -> int | None:
-    if isinstance(raw_id, (bool, float, list, dict)) or raw_id is None:
-        if isinstance(raw_id, float) and raw_id.is_integer():
-            return int(raw_id)
+    if raw_id is None or isinstance(raw_id, (bool, list, dict)):
         return None
-    try:
-        return int(raw_id)
-    except (TypeError, ValueError):
-        return None
+    if isinstance(raw_id, int):
+        return raw_id
+    if isinstance(raw_id, float):
+        return int(raw_id) if raw_id.is_integer() else None
+    if isinstance(raw_id, str):
+        try:
+            return int(raw_id.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def apply_text_qc_results(
@@ -284,8 +293,31 @@ def apply_text_qc_results(
         if not isinstance(item, dict):
             continue
         rid = _safe_item_id(item.get("id"))
-        if rid is not None:
-            by_id[rid] = item
+        if rid is None:
+            continue
+        raw_fix = item.get("fixed_id_text")
+        fix = raw_fix.strip() if isinstance(raw_fix, str) else ""
+        needs_audio = item.get("needs_audio_check") is True
+        raw_reason = item.get("reason")
+        reason = raw_reason.strip() if isinstance(raw_reason, str) else str(raw_reason or "").strip()
+
+        if rid not in by_id:
+            by_id[rid] = {
+                "fixed_id_text": fix,
+                "needs_audio_check": needs_audio,
+                "reason": reason,
+            }
+        else:
+            prev = by_id[rid]
+            if fix:
+                prev["fixed_id_text"] = fix
+            if needs_audio:
+                prev["needs_audio_check"] = True
+            if reason:
+                if not prev["reason"]:
+                    prev["reason"] = reason
+                elif reason not in prev["reason"].split("; "):
+                    prev["reason"] = f"{prev['reason']}; {reason}"
 
     updated: list[dict] = []
     issues: list[dict] = []
@@ -296,9 +328,8 @@ def apply_text_qc_results(
         rid = int(row["id"])
         item = by_id.get(rid)
         if item is not None:
-            raw_fix = item.get("fixed_id_text")
-            fix = raw_fix.strip() if isinstance(raw_fix, str) else ""
-            reason = str(item.get("reason") or "")
+            fix = item["fixed_id_text"]
+            reason = item["reason"]
             if fix and fix != str(row.get("id_text") or "").strip():
                 issues.append({
                     "id": rid,
@@ -309,7 +340,7 @@ def apply_text_qc_results(
                     "reason": reason,
                 })
                 out["id_text"] = fix
-            if item.get("needs_audio_check") is True:
+            if item["needs_audio_check"]:
                 audio_ids.add(rid)
                 issues.append({
                     "id": rid,
@@ -321,7 +352,11 @@ def apply_text_qc_results(
     return updated, issues, audio_ids
 
 
-def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_count: int):
+def _is_finite_number(val) -> bool:
+    return not isinstance(val, bool) and isinstance(val, (int, float)) and math.isfinite(val)
+
+
+def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_rows: list[dict]):
     if checkpoint_path is None or not checkpoint_path.exists():
         return None
     try:
@@ -335,9 +370,12 @@ def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_count: int):
     audio_ids = saved.get("audio_ids")
     if not isinstance(rows, list) or not isinstance(issues, list) or not isinstance(audio_ids, list):
         return None
-    if len(rows) != expected_count:
+    if not all(isinstance(r, dict) for r in rows):
         return None
-    if not all(isinstance(r, dict) and _safe_item_id(r.get("id")) is not None for r in rows):
+    expected_ids = [int(r["id"]) for r in expected_rows]
+    if [_safe_item_id(r.get("id")) for r in rows] != expected_ids:
+        return None
+    if not all(_is_finite_number(r.get("start")) and _is_finite_number(r.get("end")) for r in rows):
         return None
     if not all(isinstance(i, dict) for i in issues):
         return None
@@ -347,6 +385,8 @@ def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_count: int):
         if rid is None:
             return None
         parsed_ids.add(rid)
+    if not (parsed_ids <= set(expected_ids)):
+        return None
     return rows, issues, parsed_ids
 
 
@@ -361,40 +401,62 @@ def run_text_qc(
     checkpoint_path: Path | None = None,
 ) -> tuple[list[dict], list[dict], set[int]]:
     """Run Pass 1B whole-episode text consistency QC."""
-    cached = _load_text_qc_checkpoint(checkpoint_path, len(rows))
-    if cached is not None:
-        return cached
-
     if not rows:
         return [], [], set()
 
+    if len({int(r["id"]) for r in rows}) != len(rows):
+        raise ValueError("id baris duplikat dalam rows")
+
+    cached = _load_text_qc_checkpoint(checkpoint_path, rows)
+    if cached is not None:
+        return cached
+
     if len(rows) <= TEXT_QC_SINGLE_LIMIT:
-        windows = [(rows, None)]
+        windows: list[tuple[int, int, set[int] | None]] = [(0, len(rows), None)]
     else:
         windows = []
         step = TEXT_QC_WINDOW - TEXT_QC_OVERLAP
         for start in range(0, len(rows), step):
-            slice_rows = rows[start:start + TEXT_QC_WINDOW]
+            end = min(start + TEXT_QC_WINDOW, len(rows))
             if start == 0:
                 check_ids = None
             else:
-                check_ids = {int(r["id"]) for r in slice_rows[TEXT_QC_OVERLAP:]}
-            windows.append((slice_rows, check_ids))
-            if start + TEXT_QC_WINDOW >= len(rows):
+                check_ids = {int(r["id"]) for r in rows[start + TEXT_QC_OVERLAP:end]}
+            windows.append((start, end, check_ids))
+            if end >= len(rows):
                 break
 
     current = [dict(r) for r in rows]
     all_issues: list[dict] = []
     all_audio_ids: set[int] = set()
 
-    for win_rows, check_ids in windows:
-        by_cur = {int(r["id"]): r for r in current}
-        refreshed = [by_cur[int(r["id"])] for r in win_rows]
-        prompt = build_text_qc_user_prompt(refreshed, glossary, audit_flags, check_ids=check_ids)
+    for start, end, check_ids in windows:
+        win_rows = current[start:end]
+        prompt = build_text_qc_user_prompt(win_rows, glossary, audit_flags, check_ids=check_ids)
         response, model_used = text_runner(system, prompt)
         if tracker is not None:
             tracker.add(model_used, response.input_tokens, response.output_tokens)
-        qc_items = parse_qc_response(response.text)
+
+        try:
+            qc_items = parse_qc_response(response.text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            retry_prompt = (
+                f"Output sebelumnya SALAH ({exc}). Balas HANYA array JSON sesuai skema.\n\n"
+                + prompt
+            )
+            response, model_used = text_runner(system, retry_prompt)
+            if tracker is not None:
+                tracker.add(model_used, response.input_tokens, response.output_tokens)
+            try:
+                qc_items = parse_qc_response(response.text)
+            except (json.JSONDecodeError, ValueError) as retry_exc:
+                all_issues.append({
+                    "pass": "text_qc",
+                    "type": "warning",
+                    "reason": f"Respons Pass 1B tidak valid ({retry_exc})",
+                })
+                continue
+
         allowed_ids = check_ids if check_ids is not None else {int(r["id"]) for r in win_rows}
         filtered = []
         for it in qc_items:
@@ -403,8 +465,7 @@ def run_text_qc(
             rid = _safe_item_id(it.get("id"))
             if rid is not None and rid in allowed_ids:
                 filtered.append(it)
-        qc_items = filtered
-        current, win_issues, win_audio = apply_text_qc_results(current, qc_items)
+        current, win_issues, win_audio = apply_text_qc_results(current, filtered)
         all_issues.extend(win_issues)
         all_audio_ids |= win_audio
 
