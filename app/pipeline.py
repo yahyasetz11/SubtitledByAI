@@ -6,6 +6,7 @@ additionally checkpoints per chunk and translation per batch.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -113,6 +114,7 @@ def run_job(job_id: str) -> None:
     if job is None:
         raise KeyError(f"Job tidak ditemukan: {job_id}")
     cfg = providers.Config.load()
+    active_key_label = providers.get_active_gemini_label()
     tracker = UsageTracker(job.dir / "usage.json")
     job.status, job.error, job.failed_stage = "running", None, None
     _save(job)
@@ -130,7 +132,9 @@ def run_job(job_id: str) -> None:
             chunks = _stage_chunk(job, audio_path, cfg)
             _check_cancelled(job)
             stage = "transcribe"
-            utterances = _stage_transcribe(job, cfg, tracker, chunks)
+            utterances = _stage_transcribe(
+                job, cfg, tracker, chunks, active_key_label=active_key_label
+            )
             _check_cancelled(job)
             stage = "format"
             files = _stage_format_transcript(job, utterances)
@@ -139,13 +143,21 @@ def run_job(job_id: str) -> None:
             utterances = _stage_load_for_translation(job)
             _check_cancelled(job)
             stage = "translate"
-            rows = _stage_translate(job, cfg, tracker, utterances)
+            rows = _stage_translate(
+                job, cfg, tracker, utterances, active_key_label=active_key_label
+            )
             _check_cancelled(job)
             stage = "timing"
-            rows = _stage_timing(job, cfg, tracker, rows, chunks=None, audio_path=None)
+            rows = _stage_timing(
+                job, cfg, tracker, rows, chunks=None, audio_path=None,
+                active_key_label=active_key_label,
+            )
             _check_cancelled(job)
             stage = "qc"
-            rows = _stage_qc(job, cfg, tracker, rows, audio_path=None)
+            rows = _stage_qc(
+                job, cfg, tracker, rows, audio_path=None,
+                active_key_label=active_key_label,
+            )
             _check_cancelled(job)
             stage = "format"
             files = _stage_format(job, cfg, rows)
@@ -160,16 +172,26 @@ def run_job(job_id: str) -> None:
             chunks = _stage_chunk(job, audio_path, cfg)
             _check_cancelled(job)
             stage = "transcribe"
-            utterances = _stage_transcribe(job, cfg, tracker, chunks)
+            utterances = _stage_transcribe(
+                job, cfg, tracker, chunks, active_key_label=active_key_label
+            )
             _check_cancelled(job)
             stage = "translate"
-            rows = _stage_translate(job, cfg, tracker, utterances)
+            rows = _stage_translate(
+                job, cfg, tracker, utterances, active_key_label=active_key_label
+            )
             _check_cancelled(job)
             stage = "timing"
-            rows = _stage_timing(job, cfg, tracker, rows, chunks=chunks, audio_path=audio_path)
+            rows = _stage_timing(
+                job, cfg, tracker, rows, chunks=chunks, audio_path=audio_path,
+                active_key_label=active_key_label,
+            )
             _check_cancelled(job)
             stage = "qc"
-            rows = _stage_qc(job, cfg, tracker, rows, audio_path=audio_path)
+            rows = _stage_qc(
+                job, cfg, tracker, rows, audio_path=audio_path,
+                active_key_label=active_key_label,
+            )
             _check_cancelled(job)
             stage = "format"
             files = _stage_format(job, cfg, rows)
@@ -201,43 +223,113 @@ def _load_json_safe(path: Path, default, expected_type=None):
     return data
 
 
+def _invalidate_downstream(
+    job: Job,
+    *,
+    clear_timing: bool = False,
+    clear_qc: bool = False,
+) -> None:
+    if clear_timing:
+        (job.dir / "timing" / "utterances.json").unlink(missing_ok=True)
+        (job.dir / "timing" / "report.json").unlink(missing_ok=True)
+        for p in (job.dir / "chunks").glob("timing_*.json"):
+            p.unlink(missing_ok=True)
+    if clear_qc:
+        (job.dir / "qc" / "utterances.json").unlink(missing_ok=True)
+        (job.dir / "qc" / "report.json").unlink(missing_ok=True)
+        (job.dir / "chunks" / "qc_pass1.json").unlink(missing_ok=True)
+        for p in (job.dir / "chunks").glob("qc_audio_*.json"):
+            p.unlink(missing_ok=True)
+        (job.dir / "chunks" / "qc_input.sha256").unlink(missing_ok=True)
+
+
+def _qc_input_digest(
+    rows: list[dict],
+    glossary: dict,
+    timing_report: list,
+    chunk_offsets: list,
+    cps_threshold: float,
+    has_audio: bool,
+) -> str:
+    payload = json.dumps(
+        [rows, glossary, timing_report, chunk_offsets, float(cps_threshold), bool(has_audio)],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _parse_audio_fallback(params: dict) -> list[providers.AudioFallbackSlot]:
+    raw = params.get("audio_fallback")
+    if not isinstance(raw, (list, tuple)):
+        return []
     slots: list[providers.AudioFallbackSlot] = []
-    for s in params.get("audio_fallback") or []:
+    for s in raw[:3]:
         if not isinstance(s, dict):
             continue
-        key_label = str(s.get("key_label") or "").strip()
-        model = str(s.get("model") or "").strip()
+        raw_label = s.get("key_label")
+        raw_model = s.get("model")
+        key_label = raw_label.strip() if isinstance(raw_label, str) else ""
+        model = raw_model.strip() if isinstance(raw_model, str) else ""
         if key_label and model:
             slots.append(providers.AudioFallbackSlot(key_label=key_label, model=model))
-        if len(slots) == 3:
-            break
     return slots
 
 
 def _parse_translate_fallback(params: dict) -> list[providers.TranslateFallbackSlot]:
+    raw = params.get("translate_fallback")
+    if not isinstance(raw, (list, tuple)):
+        return []
     slots: list[providers.TranslateFallbackSlot] = []
-    for s in params.get("translate_fallback") or []:
+    for s in raw[:3]:
         if not isinstance(s, dict):
             continue
-        provider = str(s.get("provider") or "").strip()
-        model = str(s.get("model") or "").strip()
+        raw_provider = s.get("provider")
+        raw_model = s.get("model")
         raw_label = s.get("key_label")
-        key_label = str(raw_label).strip() or None if raw_label is not None else None
+        provider = raw_provider.strip() if isinstance(raw_provider, str) else ""
+        model = raw_model.strip() if isinstance(raw_model, str) else ""
+        key_label = (
+            (raw_label.strip() or None)
+            if provider == "gemini" and isinstance(raw_label, str)
+            else None
+        )
         if provider and model:
             slots.append(providers.TranslateFallbackSlot(
                 provider=provider,
                 model=model,
                 key_label=key_label,
             ))
-        if len(slots) == 3:
-            break
     return slots
 
 
-def _make_audio_runner(job: Job, cfg, stage: str, primary_model: str, primary_client=None):
+def _make_audio_runner(
+    job: Job,
+    cfg,
+    stage: str,
+    primary_model: str,
+    primary_client=None,
+    *,
+    active_key_label: str | None = None,
+):
+    client_model = getattr(primary_client, "model", None)
+    if not isinstance(client_model, str):
+        client_model = ""
+    stage_default = {
+        "timing": cfg.timing_model,
+        "qc": cfg.qc_model,
+    }.get(stage, cfg.transcribe_model)
+    primary_model = (
+        primary_model
+        or client_model
+        or stage_default
+        or cfg.transcribe_model
+        or "gemini-2.5-flash"
+    )
+    primary_label = active_key_label or providers.get_active_gemini_label()
     primary_slot = providers.AudioFallbackSlot(
-        key_label=providers.get_active_gemini_label(),
+        key_label=primary_label,
         model=primary_model,
     )
     fallback_slots = _parse_audio_fallback(job.params)
@@ -249,9 +341,12 @@ def _make_audio_runner(job: Job, cfg, stage: str, primary_model: str, primary_cl
             and hasattr(primary_client, "upload_audio")
         ):
             return primary_client
-        return providers.make_audio_client(cfg, model=slot.model, key_label=slot.key_label)
+        key_label = None if slot == primary_slot else slot.key_label
+        return providers.make_audio_client(cfg, model=slot.model, key_label=key_label)
 
     def _resolve_key(slot: providers.AudioFallbackSlot) -> str:
+        if slot == primary_slot and cfg.gemini_api_key:
+            return cfg.gemini_api_key
         return providers.resolve_gemini_key(slot.key_label, fallback_key=cfg.gemini_api_key)
 
     def runner(chunk_path: Path, system: str, user: str, on_upload_done=None):
@@ -272,18 +367,36 @@ def _make_audio_runner(job: Job, cfg, stage: str, primary_model: str, primary_cl
             on_upload_done=on_upload_done,
             on_fallback=_on_fb,
         )
-        return resp, winning.model
+        winning_model = getattr(winning, "model", None)
+        return resp, (winning_model if isinstance(winning_model, str) and winning_model else primary_model)
 
     return runner
 
 
-def _make_text_runner(job: Job, cfg, stage: str, primary_client=None):
-    provider = job.params.get("translator", "gemini")
-    primary_model = job.params.get("translate_model") or cfg.translate_models.get(provider, "")
+def _make_text_runner(
+    job: Job,
+    cfg,
+    stage: str,
+    primary_client=None,
+    *,
+    active_key_label: str | None = None,
+):
+    provider = job.params.get("translator") or "gemini"
+    client_model = getattr(primary_client, "model", None)
+    if not isinstance(client_model, str):
+        client_model = ""
+    primary_model = (
+        job.params.get("translate_model")
+        or client_model
+        or cfg.translate_models.get(provider, "")
+        or cfg.translate_models.get("gemini", "")
+        or "gemini-2.5-flash"
+    )
+    primary_label = active_key_label or providers.get_active_gemini_label()
     primary_slot = providers.TranslateFallbackSlot(
         provider=provider,
         model=primary_model,
-        key_label=providers.get_active_gemini_label() if provider == "gemini" else None,
+        key_label=primary_label if provider == "gemini" else None,
     )
     fallback_slots = _parse_translate_fallback(job.params)
 
@@ -294,8 +407,9 @@ def _make_text_runner(job: Job, cfg, stage: str, primary_client=None):
             and hasattr(primary_client, "generate")
         ):
             return primary_client
+        key_label = None if (slot == primary_slot and slot.provider == "gemini") else slot.key_label
         return providers.make_text_client(
-            cfg, slot.provider, model=slot.model, key_label=slot.key_label
+            cfg, slot.provider, model=slot.model, key_label=key_label
         )
 
     def runner(system: str, user: str):
@@ -314,7 +428,8 @@ def _make_text_runner(job: Job, cfg, stage: str, primary_client=None):
             call_fn=lambda c: c.generate(system=system, user=user),
             on_fallback=_on_fb,
         )
-        return resp, winning.model
+        winning_model = getattr(winning, "model", None)
+        return resp, (winning_model if isinstance(winning_model, str) and winning_model else primary_model)
 
     return runner
 
@@ -426,7 +541,8 @@ def _stage_chunk(job: Job, audio_path: Path, cfg) -> list[audio.PlannedChunk]:
 
 
 def _stage_transcribe(job: Job, cfg, tracker,
-                      chunks: list[audio.PlannedChunk]
+                      chunks: list[audio.PlannedChunk],
+                      *, active_key_label: str | None = None
                       ) -> list[transcribe.Utterance]:
     final_path = job.dir / "transcript_jp.json"
     if final_path.exists():
@@ -444,7 +560,10 @@ def _stage_transcribe(job: Job, cfg, tracker,
                                                        additional_context=additional_context)
     primary_model = job.params.get("transcribe_model") or cfg.transcribe_model
     gemini = providers.make_transcriber(cfg, model=primary_model)
-    audio_runner = _make_audio_runner(job, cfg, "transcribe", primary_model, primary_client=gemini)
+    audio_runner = _make_audio_runner(
+        job, cfg, "transcribe", primary_model, primary_client=gemini,
+        active_key_label=active_key_label,
+    )
     n = len(chunks)
     _emit(job, "transcribe", "start", f"transkripsi {n} chunk")
     per_chunk: list[list[transcribe.Utterance]] = []
@@ -575,12 +694,15 @@ def _stage_load_for_translation(job: "Job") -> "list[transcribe.Utterance]":
 
 
 def _stage_translate(job: Job, cfg, tracker,
-                     utterances: list[transcribe.Utterance]) -> list[dict]:
+                     utterances: list[transcribe.Utterance],
+                     *, active_key_label: str | None = None) -> list[dict]:
     out_path = job.dir / "translated_id.json"
     if out_path.exists():
-        rows = json.loads(out_path.read_text(encoding="utf-8"))
-        _emit(job, "translate", "done", f"{len(rows)} baris (checkpoint)")
-        return rows
+        rows = _load_json_safe(out_path, None, list)
+        if rows is not None:
+            _emit(job, "translate", "done", f"{len(rows)} baris (checkpoint)")
+            return rows
+    _invalidate_downstream(job, clear_timing=True, clear_qc=True)
     context_md, members_md = _read_context(
         job.params.get("group"), job.params.get("context_preset")
     )
@@ -589,12 +711,15 @@ def _stage_translate(job: Job, cfg, tracker,
     additional_context = job.params.get("additional_context") or None
     system = translate.build_translate_system(context_md, members_md,
                                               additional_context=additional_context)
-    translator = job.params.get("translator", "gemini")
+    translator = job.params.get("translator") or "gemini"
     client = providers.make_translator(
         cfg, translator,
         model=job.params.get("translate_model") or None,
     )
-    text_runner = _make_text_runner(job, cfg, "translate", primary_client=client)
+    text_runner = _make_text_runner(
+        job, cfg, "translate", primary_client=client,
+        active_key_label=active_key_label,
+    )
     glossary: dict[str, str] = {}
     _emit(job, "translate", "start",
           f"terjemahkan {len(utterances)} ujaran via {translator}")
@@ -628,7 +753,8 @@ def _stage_translate(job: Job, cfg, tracker,
 
 
 def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
-                  chunks, audio_path: Path | None) -> list[dict]:
+                  chunks, audio_path: Path | None,
+                  *, active_key_label: str | None = None) -> list[dict]:
     timing_path = job.dir / "timing" / "utterances.json"
     if timing_path.exists():
         result = timing.load_timing(job.dir)
@@ -639,13 +765,18 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
         _emit(job, "timing", "done", "dilewati (translation_only mode)")
         return rows
 
+    _invalidate_downstream(job, clear_qc=True)
+
     n = len(chunks)
     timing_model = job.params.get("timing_model") or cfg.timing_model
     _emit(job, "timing", "start",
           f"koreksi timing {len(rows)} ujaran via {timing_model} ({n} chunk)")
 
     gemini = providers.make_audio_client(cfg, model=timing_model)
-    runner4 = _make_audio_runner(job, cfg, "timing", timing_model, primary_client=gemini)
+    runner4 = _make_audio_runner(
+        job, cfg, "timing", timing_model, primary_client=gemini,
+        active_key_label=active_key_label,
+    )
     utterances = [transcribe.Utterance.from_dict(r) for r in rows]
 
     def on_progress(chunk_idx: int, total: int) -> None:
@@ -661,36 +792,45 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                      encoding="utf-8")
 
+    def audio_runner_3(p, s, u):
+        return runner4(p, s, u, None)
+
     corrected, report = timing.reanchor_all(
         utterances, chunks, job.dir / "chunks",
         gemini=gemini, tracker=tracker, on_progress=on_progress,
-        audio_runner=lambda p, s, u: runner4(p, s, u, None),
+        audio_runner=audio_runner_3,
         load_checkpoint=load_ckpt,
         save_checkpoint=save_ckpt,
     )
 
-    corrected_by_id = {u.id: (c_idx, u) for c_idx, u in enumerate(corrected)}
-    matched_rows: dict[int, transcribe.Utterance] = {}
-    used_c_idxs: set[int] = set()
-    for r_idx, r in enumerate(rows):
-        hit = corrected_by_id.get(r["id"])
-        if hit is not None:
-            c_idx, u = hit
-            if u.ja == r.get("ja") and c_idx not in used_c_idxs:
-                matched_rows[r_idx] = u
-                used_c_idxs.add(c_idx)
+    sorted_corrected = sorted(corrected, key=lambda u: (float(u.start), float(u.end)))
+    by_ja_type: dict[tuple[str, str], deque[tuple[int, transcribe.Utterance]]] = defaultdict(deque)
+    by_ja: dict[str, deque[tuple[int, transcribe.Utterance]]] = defaultdict(deque)
+    for c_idx, u in enumerate(sorted_corrected):
+        by_ja_type[(u.ja, u.type)].append((c_idx, u))
+        by_ja[u.ja].append((c_idx, u))
 
-    remaining_by_ja: dict[str, deque[transcribe.Utterance]] = defaultdict(deque)
-    for c_idx, u in enumerate(corrected):
-        if c_idx not in used_c_idxs:
-            remaining_by_ja[u.ja].append(u)
+    ordered_rows = sorted(
+        enumerate(rows),
+        key=lambda item: (float(item[1]["start"]), float(item[1]["end"]), item[0]),
+    )
+    used_c_idxs: set[int] = set()
+
+    def _pop_unused(q):
+        if not q:
+            return None
+        while q and q[0][0] in used_c_idxs:
+            q.popleft()
+        return q.popleft() if q else None
 
     result = []
-    for r_idx, r in enumerate(rows):
-        u = matched_rows.get(r_idx)
-        if u is None and remaining_by_ja[r.get("ja", "")]:
-            u = remaining_by_ja[r.get("ja", "")].popleft()
-        if u is not None:
+    for _r_idx, r in ordered_rows:
+        ja = r.get("ja", "")
+        utype = r.get("type", "dialogue")
+        hit = _pop_unused(by_ja_type.get((ja, utype))) or _pop_unused(by_ja.get(ja))
+        if hit is not None:
+            c_idx, u = hit
+            used_c_idxs.add(c_idx)
             result.append({**r, "start": u.start, "end": u.end})
         else:
             result.append(r)
@@ -706,7 +846,8 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
 
 
 def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
-              audio_path: Path | None) -> list[dict]:
+              audio_path: Path | None,
+              *, active_key_label: str | None = None) -> list[dict]:
     qc_path = job.dir / "qc" / "utterances.json"
     if qc_path.exists():
         result = qc.load_qc(job.dir)
@@ -740,19 +881,44 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
     timing_report = _load_json_safe(job.dir / "timing" / "report.json", [], list)
     chunk_offsets = _load_json_safe(job.dir / "offsets.json", [], list)
 
-    translator = job.params.get("translator", "gemini")
+    sha_path = job.dir / "chunks" / "qc_input.sha256"
+    digest = _qc_input_digest(
+        rows, glossary, timing_report, chunk_offsets,
+        cfg.sub_cps_flag, audio_path is not None,
+    )
+    if sha_path.exists():
+        try:
+            prev_digest = sha_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            prev_digest = ""
+        if prev_digest != digest:
+            (job.dir / "chunks" / "qc_pass1.json").unlink(missing_ok=True)
+            for p in (job.dir / "chunks").glob("qc_audio_*.json"):
+                p.unlink(missing_ok=True)
+    sha_path.parent.mkdir(parents=True, exist_ok=True)
+    sha_path.write_text(digest, encoding="utf-8")
+
+    translator = job.params.get("translator") or "gemini"
     text_client = providers.make_text_client(
         cfg, translator,
         model=job.params.get("translate_model") or None,
     )
-    text_runner = _make_text_runner(job, cfg, "qc", primary_client=text_client)
+    text_runner = _make_text_runner(
+        job, cfg, "qc", primary_client=text_client,
+        active_key_label=active_key_label,
+    )
 
     audio_client = None
     audio_runner_3 = None
     if audio_path is not None:
         audio_client = providers.make_audio_client(cfg, model=qc_model)
-        runner4 = _make_audio_runner(job, cfg, "qc", qc_model, primary_client=audio_client)
-        audio_runner_3 = lambda p, s, u: runner4(p, s, u, None)
+        runner4 = _make_audio_runner(
+            job, cfg, "qc", qc_model, primary_client=audio_client,
+            active_key_label=active_key_label,
+        )
+
+        def audio_runner_3(p, s, u):
+            return runner4(p, s, u, None)
 
     def on_batch(done: int, total: int) -> None:
         _emit(job, "qc", "progress", f"audio slice {done}/{total}")
@@ -773,7 +939,6 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
         checkpoint_dir=job.dir / "chunks",
     )
 
-    qc.save_qc(fixed_rows, report_or_issues, job.dir)
     if isinstance(report_or_issues, dict):
         summary = report_or_issues.get("summary") or {}
         report_payload = report_or_issues
@@ -797,6 +962,7 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
             "summary": summary,
             "issues": issues_list,
         }
+    qc.save_qc(fixed_rows, report_payload, job.dir)
 
     _emit(
         job, "qc", "done",

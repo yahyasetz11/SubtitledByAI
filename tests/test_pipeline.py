@@ -706,3 +706,480 @@ def test_primary_client_object_not_reused_as_audio_or_text_client(env, monkeypat
     assert model_t == "m-text"
     assert built_text == ["gemini-3.5-flash"]
 
+
+def test_stage_timing_duplicate_ja_preserves_order_when_later_cue_shifts_earlier(env, monkeypatch):
+    dup_utts = [
+        Utterance(id=1, start=1.0, end=2.0, type="dialogue", ja="いや"),
+        Utterance(id=2, start=2.0, end=3.0, type="dialogue", ja="いや"),
+        Utterance(id=3, start=3.0, end=4.0, type="dialogue", ja="ちょっと"),
+    ]
+    id_by_uid = {1: "Iya-1", 2: "Iya-2", 3: "Sebentar"}
+
+    monkeypatch.setattr(
+        "app.transcribe.transcribe_chunk",
+        lambda *a, **kw: dup_utts,
+    )
+    monkeypatch.setattr(
+        "app.translate.translate_batch",
+        lambda client, utterances, system, tracker, **kw: {u.id: id_by_uid[u.id] for u in utterances},
+    )
+
+    def shifted_timing(utterances, chunks, chunks_dir, gemini, tracker, **kw):
+        # Cue 3 ("ちょっと") shifts earlier than the two duplicate "いや" cues,
+        # and reanchor_all renumbers IDs 1..3 in chronological order.
+        u1, u2, u3 = utterances[0], utterances[1], utterances[2]
+        corrected = [
+            replace(u3, id=1, start=0.5, end=0.9),
+            replace(u1, id=2, start=1.1, end=1.9),
+            replace(u2, id=3, start=2.2, end=2.8),
+        ]
+        return corrected, [{"chunk": 1, "status": "corrected", "count": 3}]
+
+    monkeypatch.setattr("app.timing.reanchor_all", shifted_timing)
+
+    job = pipeline.create_job(make_params())
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+
+    saved_timing = json.loads((job.dir / "timing" / "utterances.json").read_text(encoding="utf-8"))
+    assert [(r["ja"], r["id_text"], r["start"], r["end"]) for r in saved_timing] == [
+        ("ちょっと", "Sebentar", 0.5, 0.9),
+        ("いや", "Iya-1", 1.1, 1.9),
+        ("いや", "Iya-2", 2.2, 2.8),
+    ]
+
+    # Also verify direct _stage_timing with unsorted input rows + (ja) fallback on type mismatch
+    cfg = providers.Config.load()
+    tracker = providers.UsageTracker(job.dir / "usage2.json")
+    (job.dir / "timing" / "utterances.json").unlink()
+    unsorted_rows = [
+        {"id": 2, "start": 2.0, "end": 3.0, "type": "dialogue", "ja": "いや", "id_text": "Iya-2"},
+        {"id": 1, "start": 1.0, "end": 2.0, "type": "narration", "ja": "いや", "id_text": "Iya-1"},
+    ]
+    monkeypatch.setattr(
+        "app.timing.reanchor_all",
+        lambda utts, *a, **kw: (
+            [
+                Utterance(id=1, start=1.05, end=1.95, type="dialogue", ja="いや"),
+                Utterance(id=2, start=2.05, end=2.95, type="dialogue", ja="いや"),
+            ],
+            [{"chunk": 1, "status": "corrected", "count": 2}],
+        ),
+    )
+    res = pipeline._stage_timing(
+        job, cfg, tracker, unsorted_rows, chunks=[object()], audio_path=job.dir / "audio.mp3"
+    )
+    assert [(r["id_text"], r["start"], r["end"]) for r in res] == [
+        ("Iya-1", 1.05, 1.95),
+        ("Iya-2", 2.05, 2.95),
+    ]
+
+
+def test_stage_translate_partial_resume_propagates_checkpoint_glossary(env, monkeypatch):
+    utterances = [
+        Utterance(id=i, start=float(i), end=float(i) + 0.5, type="dialogue", ja=f"台詞{i}")
+        for i in range(1, 102)
+    ]
+    seen_prompts = []
+
+    class FakeBatch2Translator:
+        model = "gemini-3.5-flash"
+
+        def generate(self, system: str, user: str, audio=None):
+            seen_prompts.append(user)
+            return LLMResponse(
+                text=json.dumps({
+                    "translations": [{"id": 101, "id_text": "Manusia Serigala terakhir"}],
+                    "new_terms": {"鬼": "Oni"},
+                }, ensure_ascii=False),
+                input_tokens=10,
+                output_tokens=5,
+            )
+
+    monkeypatch.setattr("app.translate.translate_batch", _REAL_TRANSLATE_BATCH)
+    monkeypatch.setattr("app.providers.make_translator", lambda cfg, p, model=None: FakeBatch2Translator())
+
+    job = pipeline.create_job(make_params(mode="translation_only", source="file", url=None))
+    (job.dir / "chunks").mkdir(exist_ok=True)
+    (job.dir / "chunks" / "translated_001.json").write_text(
+        json.dumps({
+            "translations": {str(i): f"ID-{i}" for i in range(1, 101)},
+            "glossary": {"人狼": "Manusia Serigala"},
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    cfg = providers.Config.load()
+    tracker = providers.UsageTracker(job.dir / "usage.json")
+    rows = pipeline._stage_translate(job, cfg, tracker, utterances)
+
+    assert len(rows) == 101
+    assert rows[0]["id_text"] == "ID-1"
+    assert rows[100]["id_text"] == "Manusia Serigala terakhir"
+    assert len(seen_prompts) == 1
+    assert "人狼 -> Manusia Serigala" in seen_prompts[0]
+    assert json.loads((job.dir / "episode_glossary.json").read_text(encoding="utf-8")) == {
+        "人狼": "Manusia Serigala",
+        "鬼": "Oni",
+    }
+    assert (job.dir / "chunks" / "translated_002.json").exists()
+
+
+def test_stage_translate_corrupt_final_checkpoint_reruns_cleanly(env):
+    job = pipeline.create_job(make_params(mode="translation_only", source="file", url=None))
+    (job.dir / "transcript_jp.json").write_text(
+        json.dumps([u.to_dict() for u in FAKE_UTTS], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (job.dir / "translated_id.json").write_text("{corrupt", encoding="utf-8")
+
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert env["translate"] == 1
+    saved = json.loads((job.dir / "translated_id.json").read_text(encoding="utf-8"))
+    assert [r["id_text"] for r in saved] == ["ID-1", "ID-2"]
+
+    # Non-list JSON is also treated as invalid checkpoint and rerun cleanly
+    (job.dir / "translated_id.json").write_text('{"unexpected": true}', encoding="utf-8")
+    for f in (job.dir / "chunks").glob("translated_*.json"):
+        f.unlink()
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert env["translate"] == 2
+
+
+def test_stale_downstream_invalidation(env, monkeypatch):
+    translate_version = {"v": 1}
+    timing_calls = {"n": 0}
+    qc_calls = []
+
+    monkeypatch.setattr(
+        "app.translate.translate_batch",
+        lambda client, utterances, system, tracker, **kw: {
+            u.id: f"V{translate_version['v']}-{u.id}" for u in utterances
+        },
+    )
+
+    def spy_timing(utterances, chunks, chunks_dir, gemini, tracker, **kw):
+        timing_calls["n"] += 1
+        job_dir = chunks_dir.parent
+        # On re-translate, _stage_translate must have wiped timing & qc artifacts before timing ran
+        if timing_calls["n"] == 2:
+            assert not (job_dir / "timing" / "report.json").exists()
+            assert not (chunks_dir / "timing_001.json").exists()
+            assert not (job_dir / "qc" / "utterances.json").exists()
+            assert not (job_dir / "qc" / "report.json").exists()
+            assert not (chunks_dir / "qc_pass1.json").exists()
+            assert not (chunks_dir / "qc_audio_000.json").exists()
+            assert not (chunks_dir / "qc_input.sha256").exists()
+        return utterances, [{"chunk": 1, "status": "corrected", "count": len(utterances)}]
+
+    def spy_qc(gemini, rows, audio_path, tmp_dir, system, tracker, **kw):
+        ckpt_dir = kw["checkpoint_dir"]
+        qc_calls.append({
+            "rows": [r["id_text"] for r in rows],
+            "pass1_exists": (ckpt_dir / "qc_pass1.json").exists(),
+            "audio0_exists": (ckpt_dir / "qc_audio_000.json").exists(),
+        })
+        return rows, {"mode": "hybrid", "deep_audio_qc": False, "summary": {"translation_fixes": 0}, "issues": []}
+
+    monkeypatch.setattr("app.timing.reanchor_all", spy_timing)
+    monkeypatch.setattr("app.qc.run_qc_all", spy_qc)
+
+    job = pipeline.create_job(make_params())
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert timing_calls["n"] == 1
+    assert len(qc_calls) == 1
+    assert (job.dir / "chunks" / "qc_input.sha256").exists()
+
+    # Seed per-chunk timing & qc checkpoints to confirm invalidation cleans them up
+    (job.dir / "chunks" / "timing_001.json").write_text("{}", encoding="utf-8")
+    (job.dir / "chunks" / "qc_pass1.json").write_text("{}", encoding="utf-8")
+    (job.dir / "chunks" / "qc_audio_000.json").write_text("{}", encoding="utf-8")
+
+    # 1) Re-running _stage_translate invalidates pre-existing timing/ and qc/ artifacts
+    translate_version["v"] = 2
+    (job.dir / "translated_id.json").unlink()
+    for f in (job.dir / "chunks").glob("translated_*.json"):
+        f.unlink()
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert timing_calls["n"] == 2
+    assert len(qc_calls) == 2
+    assert qc_calls[1]["rows"] == ["V2-1", "V2-2"]
+
+    # 2) Unchanged translated_id.json with missing qc/utterances.json preserves qc_pass1.json
+    (job.dir / "qc" / "utterances.json").unlink()
+    (job.dir / "chunks" / "qc_pass1.json").write_text("{}", encoding="utf-8")
+    (job.dir / "chunks" / "qc_audio_000.json").write_text("{}", encoding="utf-8")
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert qc_calls[2]["pass1_exists"] is True
+    assert qc_calls[2]["audio0_exists"] is True
+
+    # 3) Editing translated_id.json invalidates stale chunks/qc_pass1.json and qc_audio_*.json
+    (job.dir / "qc" / "utterances.json").unlink()
+    edited = json.loads((job.dir / "translated_id.json").read_text(encoding="utf-8"))
+    edited[0]["id_text"] = "Edited-manually"
+    (job.dir / "translated_id.json").write_text(
+        json.dumps(edited, ensure_ascii=False), encoding="utf-8"
+    )
+    # Keep timing aligned with translated_id or wipe timing so edited rows flow straight to QC
+    (job.dir / "timing" / "utterances.json").write_text(
+        json.dumps(edited, ensure_ascii=False), encoding="utf-8"
+    )
+    old_sha = (job.dir / "chunks" / "qc_input.sha256").read_text(encoding="utf-8")
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert qc_calls[3]["rows"][0] == "Edited-manually"
+    assert qc_calls[3]["pass1_exists"] is False
+    assert qc_calls[3]["audio0_exists"] is False
+    assert (job.dir / "chunks" / "qc_input.sha256").read_text(encoding="utf-8") != old_sha
+
+    # 4) Re-running _stage_timing invalidates pre-existing qc/ artifacts
+    (job.dir / "chunks" / "qc_pass1.json").write_text("{}", encoding="utf-8")
+    (job.dir / "timing" / "utterances.json").unlink()
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert timing_calls["n"] == 3
+    assert len(qc_calls) == 5
+    assert qc_calls[4]["pass1_exists"] is False
+
+
+def test_parse_fallbacks_handles_malformed_payloads():
+    for bad in (123, True, "bad", {"key_label": "ALT"}, None):
+        assert pipeline._parse_audio_fallback({"audio_fallback": bad}) == []
+        assert pipeline._parse_translate_fallback({"translate_fallback": bad}) == []
+
+    audio_slots = pipeline._parse_audio_fallback({
+        "audio_fallback": [
+            "not-a-dict",
+            {"key_label": 123, "model": "gemini-2.5-flash"},
+            {"key_label": "ALT", "model": True},
+        ]
+    })
+    assert audio_slots == []
+
+    audio_valid = pipeline._parse_audio_fallback({
+        "audio_fallback": [
+            {"key_label": " K1 ", "model": " m1 "},
+            {"key_label": "K2", "model": "m2"},
+            {"key_label": "K3", "model": "m3"},
+            {"key_label": "K4", "model": "m4"},
+        ]
+    })
+    assert audio_valid == [
+        providers.AudioFallbackSlot(key_label="K1", model="m1"),
+        providers.AudioFallbackSlot(key_label="K2", model="m2"),
+        providers.AudioFallbackSlot(key_label="K3", model="m3"),
+    ]
+
+    trans_slots = pipeline._parse_translate_fallback({
+        "translate_fallback": [
+            None,
+            {"provider": "openai", "model": "gpt-4o", "key_label": "ALT"},
+            {"provider": "gemini", "model": "gemini-2.5-flash", "key_label": " ALT "},
+            {"provider": "gemini", "model": "gemini-2.5-pro", "key_label": 999},
+        ]
+    })
+    assert trans_slots == [
+        providers.TranslateFallbackSlot(provider="openai", model="gpt-4o", key_label=None),
+        providers.TranslateFallbackSlot(provider="gemini", model="gemini-2.5-flash", key_label="ALT"),
+    ]
+
+    trans_non_str = pipeline._parse_translate_fallback({
+        "translate_fallback": [
+            {"provider": True, "model": "gpt-4o", "key_label": None},
+            {"provider": "gemini", "model": 123, "key_label": "ALT"},
+            {"provider": "gemini", "model": "gemini-2.5-flash", "key_label": 123},
+        ]
+    })
+    assert trans_non_str == [
+        providers.TranslateFallbackSlot(provider="gemini", model="gemini-2.5-flash", key_label=None),
+    ]
+
+
+def test_timing_and_qc_runners_step_through_fallbacks_and_clear_failed_stage_on_retry(env, monkeypatch):
+    class HttpErr(Exception):
+        def __init__(self, status_code: int):
+            super().__init__(f"HTTP {status_code}")
+            self.status_code = status_code
+
+    audio_calls = []
+    text_calls = []
+    qc_should_fail_all = {"flag": True}
+
+    class FakeAudioClient:
+        def __init__(self, api_key: str, model: str):
+            self.api_key = api_key
+            self.model = model
+
+        def upload_audio(self, path):
+            return f"ref:{self.api_key}"
+
+        def generate(self, system: str, user: str, audio=None):
+            audio_calls.append((self.api_key, self.model))
+            if self.model in ("timing-primary", "qc-primary"):
+                raise HttpErr(503)
+            if self.model == "gemini-2.5-flash" and qc_should_fail_all["flag"] and "QC" in user:
+                raise HttpErr(503)
+            return LLMResponse(text="[]", input_tokens=7, output_tokens=3)
+
+    class FakeTextClient:
+        def __init__(self, provider: str, model: str, key_label: str | None = None):
+            self.provider = provider
+            self.model = model
+            self.key_label = key_label
+
+        def generate(self, system: str, user: str, audio=None):
+            text_calls.append((self.provider, self.key_label, self.model))
+            if self.provider == "gemini":
+                raise HttpErr(503)
+            return LLMResponse(text="[]", input_tokens=9, output_tokens=4)
+
+    monkeypatch.setenv("GEMINI_API_KEY", "k-default")
+    monkeypatch.setenv("GEMINI_API_KEY_ALT", "k-alt")
+    monkeypatch.setenv("OPENAI_API_KEY", "o-key")
+
+    orig_exec_audio = providers.execute_audio_with_fallback
+    orig_exec_text = providers.execute_with_fallback
+    monkeypatch.setattr(
+        "app.providers.execute_audio_with_fallback",
+        lambda **kw: orig_exec_audio(**{**kw, "sleep": lambda _: None}),
+    )
+    monkeypatch.setattr(
+        "app.providers.execute_with_fallback",
+        lambda **kw: orig_exec_text(**{**kw, "sleep": lambda _: None}),
+    )
+    monkeypatch.setattr(
+        "app.providers.make_audio_client",
+        lambda cfg, model=None, key_label=None: FakeAudioClient(
+            providers.resolve_gemini_key(key_label, fallback_key=cfg.gemini_api_key),
+            model or cfg.transcribe_model,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.providers.make_text_client",
+        lambda cfg, p, model=None, key_label=None: FakeTextClient(
+            p, model or cfg.translate_models[p], key_label=key_label
+        ),
+    )
+
+    def fake_timing(utterances, chunks, chunks_dir, gemini, tracker, **kw):
+        resp, model_used = kw["audio_runner"](chunks_dir / "chunk_001.mp3", "", "TIMING")
+        tracker.add(model_used, resp.input_tokens, resp.output_tokens)
+        return utterances, [{"chunk": 1, "status": "corrected", "count": len(utterances)}]
+
+    def fake_qc(gemini, rows, audio_path, tmp_dir, system, tracker, **kw):
+        resp_t, model_t = kw["text_runner"](system, "QC_TEXT")
+        tracker.add(model_t, resp_t.input_tokens, resp_t.output_tokens)
+        resp_a, model_a = kw["audio_runner"](audio_path, system, "QC_AUDIO")
+        tracker.add(model_a, resp_a.input_tokens, resp_a.output_tokens)
+        return rows, {"mode": "hybrid", "deep_audio_qc": False, "summary": {"translation_fixes": 0}, "issues": []}
+
+    monkeypatch.setattr("app.timing.reanchor_all", fake_timing)
+    monkeypatch.setattr("app.qc.run_qc_all", fake_qc)
+
+    job = pipeline.create_job(make_params(
+        timing_model="timing-primary",
+        qc_model="qc-primary",
+        audio_fallback=[{"key_label": "ALT", "model": "gemini-2.5-flash"}],
+        translate_fallback=[{"provider": "openai", "key_label": None, "model": "gpt-4o"}],
+    ))
+    pipeline.run_job(job.id)
+    assert job.status == "failed"
+    assert job.failed_stage == "qc"
+    assert any(
+        e["stage"] == "timing" and "Fallback 1" in e.get("message", "")
+        for e in job.events
+    )
+
+    # Retry with QC fallback fixed -> succeeds and clears job.failed_stage to None
+    qc_should_fail_all["flag"] = False
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    assert job.failed_stage is None
+    pipeline.JOBS.clear()
+    reloaded = pipeline.load_job(job.id)
+    assert reloaded is not None
+    assert reloaded.failed_stage is None
+    assert ("k-alt", "gemini-2.5-flash") in audio_calls
+    assert ("openai", None, "gpt-4o") in text_calls
+    assert any(
+        e["stage"] == "qc" and "Fallback 1" in e.get("message", "")
+        for e in job.events
+    )
+
+
+def test_pipeline_handles_none_translator_active_key_race_model_defaults_and_qc_report_parity(env, monkeypatch):
+    # 1) translator=None defaults safely to gemini across _make_text_runner, _stage_translate, _stage_qc
+    # 2) _stage_qc returning a list in text_only mode saves identical report to disk & SSE
+    monkeypatch.setattr(
+        "app.qc.run_qc_all",
+        lambda *a, **kw: (a[1], [{"id": 1, "type": "translation", "reason": "r"}]),
+    )
+    job = pipeline.create_job(make_params(
+        mode="translation_only", source="file", url=None, translator=None,
+    ))
+    (job.dir / "transcript_jp.json").write_text(
+        json.dumps([FAKE_UTTS[0].to_dict()], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    pipeline.run_job(job.id)
+    assert job.status == "done"
+    qc_done = [e for e in job.events if e["stage"] == "qc" and e["status"] == "done"][-1]
+    disk_report = json.loads((job.dir / "qc" / "report.json").read_text(encoding="utf-8"))
+    assert disk_report == qc_done["result"]["report"]
+    assert disk_report["mode"] == "text_only"
+
+    # 3) Active-key race: _resolve_key(primary_slot) uses cfg.gemini_api_key even if active label flips
+    # 4) primary_model fallback when primary_model="" and winning client has no .model
+    monkeypatch.setenv("GEMINI_API_KEY", "k-default")
+    monkeypatch.setenv("GEMINI_API_KEY_ALT", "k-alt")
+    providers.set_active_gemini_key("Default")
+    cfg = providers.Config.load()
+    cfg.gemini_api_key = "k-cfg-locked"
+    providers.set_active_gemini_key("ALT")
+    try:
+        uploaded_refs = []
+
+        class NoModelAudioClient:
+            def upload_audio(self, p):
+                uploaded_refs.append(p)
+                return "ref-locked"
+
+            def generate(self, system, user, audio=None):
+                return LLMResponse(text="[]", input_tokens=1, output_tokens=1)
+
+        class NoModelTextClient:
+            def generate(self, system, user, audio=None):
+                return LLMResponse(text="[]", input_tokens=1, output_tokens=1)
+
+        seen_audio_keys = []
+        orig_exec_audio = providers.execute_audio_with_fallback
+
+        def spy_exec_audio(**kw):
+            seen_audio_keys.append(kw["resolve_key"](kw["primary"]))
+            return orig_exec_audio(**kw)
+
+        monkeypatch.setattr("app.providers.execute_audio_with_fallback", spy_exec_audio)
+
+        chunk = job.dir / "chunks" / "chunk_001.mp3"
+        chunk.write_bytes(b"mp3")
+        a_runner = pipeline._make_audio_runner(
+            job, cfg, "timing", "", primary_client=NoModelAudioClient()
+        )
+        _, model_a = a_runner(chunk, "sys", "usr")
+        assert seen_audio_keys == ["k-cfg-locked"]
+        assert model_a == cfg.timing_model
+
+        t_runner = pipeline._make_text_runner(
+            job, cfg, "translate", primary_client=NoModelTextClient()
+        )
+        _, model_t = t_runner("sys", "usr")
+        assert model_t == "gemini-3.5-flash"
+    finally:
+        providers.set_active_gemini_key("Default")
+
+
