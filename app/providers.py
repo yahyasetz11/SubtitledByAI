@@ -67,18 +67,27 @@ def set_active_gemini_key(label: str) -> None:
 
 def resolve_gemini_key(key_label: str | None = None, *, fallback_key: str | None = None) -> str:
     """Resolve a Gemini API key by label without mutating global active state."""
-    if not key_label:
-        if fallback_key is not None:
-            return fallback_key
-        all_keys = get_all_gemini_keys()
-        return all_keys.get(_active_gemini_label, "")
+    label = (key_label or "").strip()
+    if not label:
+        key = (fallback_key or "").strip()
+        if key:
+            return key
+        key = get_all_gemini_keys().get(_active_gemini_label, "")
+        if not key:
+            raise ConfigError(
+                "GEMINI_API_KEY belum diisi. Salin .env.example menjadi .env "
+                "lalu isi GEMINI_API_KEY."
+            )
+        return key
     all_keys = get_all_gemini_keys()
-    if key_label not in all_keys:
+    if label not in all_keys:
+        if label == "Default":
+            raise ConfigError("GEMINI_API_KEY belum diisi di .env.")
         raise ConfigError(
-            f"Label Gemini key '{key_label}' tidak ditemukan. "
-            f"Tambahkan GEMINI_API_KEY_{key_label}=... ke .env."
+            f"Label Gemini key '{label}' tidak ditemukan. "
+            f"Tambahkan GEMINI_API_KEY_{label}=... ke .env."
         )
-    return all_keys[key_label]
+    return all_keys[label]
 
 
 @dataclass
@@ -110,18 +119,31 @@ class Config:
                 "GEMINI_API_KEY belum diisi. Salin .env.example menjadi .env "
                 "lalu isi GEMINI_API_KEY (wajib untuk transkripsi & translasi)."
             )
-        _models = load_models_config()
-        _defaults = _models["defaults"]
-        _trans_defaults = _defaults["translation"]
+        try:
+            _models = load_models_config()
+            _defaults = _models["defaults"]
+            _trans_defaults = _defaults["translation"]
+            default_transcribe = _defaults["transcription"]
+            default_translate = {
+                "gemini": _trans_defaults["gemini"],
+                "openai": _trans_defaults["openai"],
+                "anthropic": _trans_defaults["anthropic"],
+            }
+            default_timing = _defaults.get("timing", "gemini-2.5-flash")
+            default_qc = _defaults.get("qc", "gemini-2.5-flash")
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ConfigError(
+                f"Konfigurasi model tidak valid atau gagal dimuat ({MODELS_CONFIG_PATH}): {exc}"
+            ) from exc
         return cls(
             gemini_api_key=gemini_key,
             openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip() or None,
             anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip() or None,
-            transcribe_model=_defaults["transcription"],
+            transcribe_model=(os.getenv("TRANSCRIBE_MODEL") or "").strip() or default_transcribe,
             translate_models={
-                "gemini": _trans_defaults["gemini"],
-                "openai": _trans_defaults["openai"],
-                "anthropic": _trans_defaults["anthropic"],
+                "gemini": (os.getenv("TRANSLATE_MODEL_GEMINI") or "").strip() or default_translate["gemini"],
+                "openai": (os.getenv("TRANSLATE_MODEL_OPENAI") or "").strip() or default_translate["openai"],
+                "anthropic": (os.getenv("TRANSLATE_MODEL_ANTHROPIC") or "").strip() or default_translate["anthropic"],
             },
             ytdlp_cookies_file=_clean_cookies_value(os.getenv("YTDLP_COOKIES_FILE")),
             sub_min_duration=float(os.getenv("SUB_MIN_DURATION", "0.7")),
@@ -130,10 +152,10 @@ class Config:
             sub_cps_flag=float(os.getenv("SUB_CPS_FLAG", "25")),
             chunk_min_seconds=float(os.getenv("CHUNK_MIN_MINUTES", "4")) * 60,
             chunk_max_seconds=float(os.getenv("CHUNK_MAX_MINUTES", "6")) * 60,
-            timing_model=_defaults["timing"],
+            timing_model=(os.getenv("TIMING_MODEL") or "").strip() or default_timing,
             qc_window_size=int(os.getenv("QC_WINDOW_SIZE", "10")),
             qc_batch_size=int(os.getenv("QC_BATCH_SIZE", "20")),
-            qc_model=_defaults["qc"],
+            qc_model=(os.getenv("QC_MODEL") or "").strip() or default_qc,
         )
 
     def available_providers(self) -> dict[str, bool]:
@@ -393,9 +415,10 @@ def make_transcriber(cfg: Config, model: str | None = None) -> GeminiClient:
 def make_audio_client(
     cfg: Config, model: str | None = None, key_label: str | None = None
 ) -> GeminiClient:
-    if key_label is None:
+    label = (key_label or "").strip() or None
+    if label is None:
         return make_transcriber(cfg, model=model)
-    api_key = resolve_gemini_key(key_label, fallback_key=cfg.gemini_api_key)
+    api_key = resolve_gemini_key(label, fallback_key=cfg.gemini_api_key)
     return GeminiClient(api_key, model or cfg.transcribe_model)
 
 
@@ -418,8 +441,9 @@ def make_text_client(
     provider: str,
     model: str | None = None,
     key_label: str | None = None,
-):
-    if provider == "gemini" and key_label is not None:
-        api_key = resolve_gemini_key(key_label, fallback_key=cfg.gemini_api_key)
+) -> GeminiClient | OpenAIClient | AnthropicClient:
+    label = (key_label or "").strip() or None
+    if provider == "gemini" and label is not None:
+        api_key = resolve_gemini_key(label, fallback_key=cfg.gemini_api_key)
         return GeminiClient(api_key, model or cfg.translate_models["gemini"])
     return make_translator(cfg, provider, model=model)
