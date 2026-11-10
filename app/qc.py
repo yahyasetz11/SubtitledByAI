@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from app import audio
 from app.providers import call_with_retries
+from app.subtitle import _dashed_line_count
 from app.transcribe import Utterance
 
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
@@ -46,16 +48,21 @@ def audit_local(
     *,
     audio_path: Path | None = None,
     timing_report: list[dict] | None = None,
-    chunk_offsets: list[dict] | None = None,
+    chunk_offsets: Sequence[dict | audio.PlannedChunk] | None = None,
     cps_threshold: float = 25.0,
 ) -> dict[int, list[str]]:
     """Free deterministic QC audit. Returns {row_id: [reason_codes]}."""
+    if not rows:
+        return {}
+
     flags: dict[int, list[str]] = {}
 
     def _flag(row_id: int, code: str) -> None:
         lst = flags.setdefault(row_id, [])
         if code not in lst:
             lst.append(code)
+
+    sorted_rows = sorted(rows, key=lambda r: (float(r["start"]), float(r["end"])))
 
     # 1. Identify utterances belonging to timing fallback chunks
     fallback_chunks = {
@@ -64,19 +71,23 @@ def audit_local(
         if e.get("status") == "fallback" and "chunk" in e
     }
     if fallback_chunks and chunk_offsets:
-        first_start = float(_chunk_field(chunk_offsets[0], "start"))
-        first_index = _chunk_field(chunk_offsets[0], "index")
-        for row in rows:
+        norm_chunks = sorted(
+            [
+                (_chunk_field(c, "index"), float(_chunk_field(c, "start")), float(_chunk_field(c, "end")))
+                for c in chunk_offsets
+            ],
+            key=lambda x: x[1],
+        )
+        first_index, first_start, _ = norm_chunks[0]
+        for row in sorted_rows:
             rstart = float(row["start"])
             if rstart < first_start:
                 if first_index in fallback_chunks:
                     _flag(int(row["id"]), "timing_fallback")
                 continue
-            for idx, ch in enumerate(chunk_offsets):
-                cstart = float(_chunk_field(ch, "start"))
-                cend = float(_chunk_field(ch, "end"))
-                if cstart <= rstart < cend or idx == len(chunk_offsets) - 1:
-                    if _chunk_field(ch, "index") in fallback_chunks:
+            for idx, (cindex, cstart, cend) in enumerate(norm_chunks):
+                if cstart <= rstart < cend or idx == len(norm_chunks) - 1:
+                    if cindex in fallback_chunks:
                         _flag(int(row["id"]), "timing_fallback")
                     break
 
@@ -89,13 +100,13 @@ def audit_local(
             silences = []
 
     prev_end: float | None = None
-    for row in rows:
+    for row in sorted_rows:
         rid = int(row["id"])
         start = float(row["start"])
         end = float(row["end"])
         dur = max(0.01, end - start)
-        ja = str(row.get("ja", ""))
-        id_text = str(row.get("id_text", ""))
+        ja = str(row.get("ja") or "")
+        id_text = str(row.get("id_text") or "")
 
         if silences and _is_in_silence(start, end, silences):
             _flag(rid, "in_silence")
@@ -106,11 +117,11 @@ def audit_local(
 
         ja_compact = _SPACE_RE.sub("", ja)
         jp_rate = len(ja_compact) / dur
-        if (dur >= 0.4 and jp_rate > 18.0) or (dur > 3.0 and jp_rate < 1.2):
+        if end <= start or (dur >= 0.4 and jp_rate > 18.0) or (dur > 3.0 and jp_rate < 1.2):
             _flag(rid, "rate_outlier")
 
-        ja_turns = sum(1 for ln in ja.splitlines() if ln.lstrip().startswith("- "))
-        id_turns = sum(1 for ln in id_text.splitlines() if ln.lstrip().startswith("- "))
+        ja_turns = _dashed_line_count(ja)
+        id_turns = _dashed_line_count(id_text)
         if ja_turns >= 3 or id_turns >= 3:
             _flag(rid, "speaker_overflow")
 

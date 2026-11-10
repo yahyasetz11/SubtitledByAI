@@ -158,3 +158,85 @@ def test_audit_local_timing_fallback_boundaries_and_empty_rows():
         chunk_offsets=chunks,
     )
     assert flags_c2 == {2: ["timing_fallback"], 3: ["timing_fallback"]}
+
+
+def test_audit_local_sorts_working_copy_without_mutating_caller_rows():
+    disjoint = [
+        _row(1, 5.0, 6.0, ja="あいう", id_text="Kedua"),
+        _row(2, 1.0, 2.0, ja="あいう", id_text="Pertama"),
+    ]
+    flags_disjoint = audit_local(disjoint)
+    assert flags_disjoint == {}
+    assert [r["id"] for r in disjoint] == [1, 2]
+
+    reversed_overlap = [
+        _row(1, 5.0, 6.0, ja="あいう", id_text="Kedua"),
+        _row(2, 4.5, 5.5, ja="あいう", id_text="Pertama"),
+    ]
+    flags_overlap = audit_local(reversed_overlap)
+    assert flags_overlap == {1: ["overlap"]}
+    assert [r["id"] for r in reversed_overlap] == [1, 2]
+
+
+def test_audit_local_handles_null_ja_and_id_text():
+    rows = [
+        _row(1, 0.0, 0.1, ja=None, id_text=None),   # short 0.1s: must NOT trigger high_cps
+        _row(2, 1.0, 4.2, ja=None, id_text=None),   # long 3.2s: empty ja triggers rate_outlier
+    ]
+    flags = audit_local(rows, cps_threshold=25.0)
+    assert 1 not in flags
+    assert flags[2] == ["rate_outlier"]
+
+
+def test_audit_local_empty_none_and_unsorted_chunk_offsets():
+    rows = [
+        _row(1, 1.0, 2.0, ja="あいう", id_text="Satu"),
+        _row(2, 12.0, 13.0, ja="あいう", id_text="Dua"),
+    ]
+    timing_report = [
+        {"chunk": 1, "status": "fallback"},
+        {"chunk": 2, "status": "corrected"},
+    ]
+    assert audit_local(rows, timing_report=timing_report, chunk_offsets=[]) == {}
+    assert audit_local(rows, timing_report=timing_report, chunk_offsets=None) == {}
+
+    unsorted_chunks = [
+        PlannedChunk(2, 10.0, 20.0, False),
+        PlannedChunk(1, 0.0, 10.0, False),
+    ]
+    flags = audit_local(rows, timing_report=timing_report, chunk_offsets=unsorted_chunks)
+    assert flags == {1: ["timing_fallback"]}
+
+
+def test_audit_local_empty_rows_skips_detect_silences(tmp_path, monkeypatch):
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"mp3")
+    called = False
+
+    def spy_detect(p, db):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr("app.qc.audio.detect_silences", spy_detect)
+    assert audit_local(
+        [],
+        audio_path=audio_path,
+        timing_report=[{"chunk": 1, "status": "fallback"}],
+        chunk_offsets=[{"index": 1, "start": 0.0, "end": 10.0}],
+    ) == {}
+    assert called is False
+
+
+def test_audit_local_flags_zero_and_inverted_duration_as_rate_outlier():
+    rows = [
+        _row(1, 2.0, 2.0, ja="", id_text=""),          # end == start
+        _row(2, 5.0, 4.0, ja="あ", id_text="Halo"),    # end < start
+    ]
+    flags = audit_local(rows, cps_threshold=25.0)
+    assert "rate_outlier" in flags[1]
+    assert "rate_outlier" in flags[2]
+    assert "rate_outlier" in ACOUSTIC_FLAG_REASONS
+    assert set(flags[1]) & ACOUSTIC_FLAG_REASONS == {"rate_outlier"}
+    assert set(flags[2]) & ACOUSTIC_FLAG_REASONS == {"rate_outlier"}
+
