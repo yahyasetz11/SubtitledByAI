@@ -1,6 +1,7 @@
 """API-client abstraction: config, retry, usage tracking, LLM clients."""
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import time
@@ -481,13 +482,13 @@ def _execute_slot_chain(
 ):
     if attempts_per_slot < 1:
         raise ValueError("attempts_per_slot must be >= 1")
-    chain = [primary, *(fallback_slots or ())[:3]]
+    chain = [primary, *itertools.islice(fallback_slots or (), 3)]
     last_exc: Exception | None = None
     for idx, slot in enumerate(chain):
         if idx > 0 and on_fallback is not None:
             on_fallback(idx, slot, last_exc)
-        client = build_client(slot)
         try:
+            client = build_client(slot)
             result = call_with_retries(
                 lambda c=client, s=slot: invoke_slot(c, s),
                 attempts=attempts_per_slot,
@@ -551,7 +552,10 @@ def execute_audio_with_fallback(
     def _run_for_client(client, slot: AudioFallbackSlot):
         api_key = resolve_key(slot)
         if api_key not in upload_cache:
-            upload_cache[api_key] = client.upload_audio(chunk_path)
+            ref = client.upload_audio(chunk_path)
+            if ref is None:
+                raise RuntimeError(f"upload_audio mengembalikan None untuk {chunk_path.name}")
+            upload_cache[api_key] = ref
             if on_upload_done is not None:
                 on_upload_done()
         return call_fn(client, upload_cache[api_key])

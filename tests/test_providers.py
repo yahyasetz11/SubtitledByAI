@@ -652,7 +652,7 @@ def test_execute_with_fallback_caps_at_three_slots_and_raises_last_error():
             self.model = model
 
         def generate(self, system, user, audio=None):
-            raise FakeHTTPError(503)
+            raise FakeHTTPError(502 if self.model == "m3" else 503)
 
     primary = AudioFallbackSlot(key_label="Default", model="m0")
     slots = [
@@ -674,7 +674,7 @@ def test_execute_with_fallback_caps_at_three_slots_and_raises_last_error():
             call_fn=lambda c: c.generate("s", "u"),
             sleep=lambda _: None,
         )
-    assert exc_info.value.status_code == 503
+    assert exc_info.value.status_code == 502
     assert built == ["m0", "m1", "m2", "m3"]
 
 
@@ -863,3 +863,145 @@ def test_execute_audio_with_fallback_retries_transient_upload_503_and_validates_
             attempts_per_slot=0,
             sleep=lambda _: None,
         )
+
+
+@pytest.mark.parametrize("fallback_slots", [[], None])
+def test_execute_with_fallback_empty_or_none_slots_exhausts_primary_and_reraises(fallback_slots):
+    attempts = []
+    fallbacks = []
+
+    class FailingClient:
+        model = "m0"
+
+        def generate(self, system, user, audio=None):
+            attempts.append(self.model)
+            raise FakeHTTPError(503)
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+
+    with pytest.raises(FakeHTTPError) as exc_info:
+        execute_with_fallback(
+            primary=primary,
+            fallback_slots=fallback_slots,
+            build_client=lambda s: FailingClient(),
+            call_fn=lambda c: c.generate("s", "u"),
+            attempts_per_slot=3,
+            on_fallback=lambda idx, slot, exc: fallbacks.append((idx, slot.model, exc)),
+            sleep=lambda _: None,
+        )
+    assert exc_info.value.status_code == 503
+    assert attempts == ["m0", "m0", "m0"]
+    assert fallbacks == []
+
+
+@pytest.mark.parametrize(
+    "build_exc",
+    [FakeHTTPError(503), FakeHTTPError(403), ConnectionError("dns failed")],
+)
+def test_execute_with_fallback_steps_to_slot1_when_build_client_raises_trigger(build_exc):
+    built = []
+    fallbacks = []
+
+    class OkClient:
+        model = "m1"
+
+        def generate(self, system, user, audio=None):
+            return LLMResponse(text="ok", input_tokens=1, output_tokens=1)
+
+    def build(slot):
+        built.append(slot.model)
+        if slot.model == "m0":
+            raise build_exc
+        return OkClient()
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slot1 = AudioFallbackSlot(key_label="ALT", model="m1")
+
+    resp, winner = execute_with_fallback(
+        primary=primary,
+        fallback_slots=[slot1],
+        build_client=build,
+        call_fn=lambda c: c.generate("s", "u"),
+        on_fallback=lambda idx, slot, exc: fallbacks.append((idx, slot.model, exc)),
+        sleep=lambda _: None,
+    )
+    assert resp.text == "ok"
+    assert winner.model == "m1"
+    assert built == ["m0", "m1"]
+    assert fallbacks == [(1, "m1", build_exc)]
+
+
+@pytest.mark.parametrize("build_exc", [ConfigError("bad key"), FakeHTTPError(400)])
+def test_execute_with_fallback_fails_immediately_when_build_client_raises_non_trigger(build_exc):
+    built = []
+    fallbacks = []
+
+    def build(slot):
+        built.append(slot.model)
+        raise build_exc
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slot1 = AudioFallbackSlot(key_label="ALT", model="m1")
+
+    with pytest.raises(type(build_exc)) as exc_info:
+        execute_with_fallback(
+            primary=primary,
+            fallback_slots=[slot1],
+            build_client=build,
+            call_fn=lambda c: c.generate("s", "u"),
+            on_fallback=lambda idx, slot, exc: fallbacks.append((idx, slot.model, exc)),
+            sleep=lambda _: None,
+        )
+    assert exc_info.value is build_exc
+    assert built == ["m0"]
+    assert fallbacks == []
+
+
+def test_execute_audio_with_fallback_raises_when_upload_returns_none(tmp_path):
+    chunk = tmp_path / "chunk_004.mp3"
+    chunk.write_bytes(b"mp3")
+    built = []
+    upload_calls = 0
+    upload_done = 0
+    generate_calls = 0
+
+    class NullUploadClient:
+        def __init__(self, model):
+            self.model = model
+
+        def upload_audio(self, path):
+            nonlocal upload_calls
+            upload_calls += 1
+            return None
+
+        def generate(self, system, user, audio=None):
+            nonlocal generate_calls
+            generate_calls += 1
+            return LLMResponse(text="unexpected", input_tokens=1, output_tokens=1)
+
+    def build(slot):
+        built.append(slot.model)
+        return NullUploadClient(slot.model)
+
+    def on_up():
+        nonlocal upload_done
+        upload_done += 1
+
+    primary = AudioFallbackSlot(key_label="Default", model="m0")
+    slot1 = AudioFallbackSlot(key_label="Default", model="m1")
+
+    with pytest.raises(RuntimeError, match=r"None.*chunk_004\.mp3"):
+        execute_audio_with_fallback(
+            chunk_path=chunk,
+            primary=primary,
+            fallback_slots=[slot1],
+            build_client=build,
+            resolve_key=lambda s: "k1",
+            call_fn=lambda c, ref: c.generate("s", "u", audio=ref),
+            on_upload_done=on_up,
+            sleep=lambda _: None,
+        )
+    assert upload_calls == 1
+    assert upload_done == 0
+    assert generate_calls == 0
+    assert built == ["m0"]
