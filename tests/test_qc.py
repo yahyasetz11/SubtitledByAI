@@ -553,7 +553,13 @@ def test_parse_qc_response_and_prompt_formatting():
         parse_qc_response(None)
     with pytest.raises(ValueError, match="output bukan array JSON"):
         parse_qc_response("{}")
+    assert parse_qc_response('{"items": []}') == []
+    assert parse_qc_response('{"items": [{"id": 1}]}') == [{"id": 1}]
     assert parse_qc_response('```json\n{"items": [{"id": 1}]}\n```') == [{"id": 1}]
+    assert parse_qc_response('[{"id": 1}]') == [{"id": 1}]
+    assert parse_qc_response('[]') == []
+    assert parse_qc_response('{"id": 1, "fixed_id_text": "Baru"}') == [{"id": 1, "fixed_id_text": "Baru"}]
+    assert parse_qc_response('{"notes": "ok", "items": [{"id": 2}]}') == [{"id": 2}]
 
     rows = [
         _row(1, 0.0, 1.5, ja="あ", id_text="Satu"),
@@ -565,12 +571,61 @@ def test_parse_qc_response_and_prompt_formatting():
         audit_flags={1: [], 2: ["high_cps"]},
         check_ids={2},
     )
+    assert '"items"' in prompt
+    assert '{"items": []}' in prompt
     assert '"context_only": true' in prompt
     items = _extract_prompt_items(prompt)
     assert items[0]["context_only"] is True
     assert "audit_flags" not in items[0]
     assert "context_only" not in items[1]
     assert items[1]["audit_flags"] == ["high_cps"]
+
+
+def test_run_text_qc_accepts_openai_json_object_responses():
+    rows = [
+        _row(1, 0.0, 2.0, ja="あ", id_text="Teks satu"),
+        _row(2, 2.0, 4.0, ja="い", id_text="Teks dua"),
+    ]
+    clean_calls = 0
+
+    def openai_clean_runner(system, user):
+        nonlocal clean_calls
+        clean_calls += 1
+        assert '"items"' in user
+        return LLMResponse(text='{"items": []}', input_tokens=10, output_tokens=3), "gpt-4.1"
+
+    fixed_clean, issues_clean, audio_clean = run_text_qc(
+        rows, system="SYS", glossary={}, audit_flags={}, tracker=None,
+        text_runner=openai_clean_runner,
+    )
+    assert clean_calls == 1
+    assert fixed_clean == rows
+    assert issues_clean == []
+    assert audio_clean == set()
+
+    fix_calls = 0
+
+    def openai_fix_runner(system, user):
+        nonlocal fix_calls
+        fix_calls += 1
+        return LLMResponse(
+            text=json.dumps({
+                "items": [
+                    {"id": 1, "fixed_id_text": "Teks satu diperbaiki", "needs_audio_check": False, "reason": "Glosarium"},
+                ]
+            }),
+            input_tokens=12, output_tokens=8,
+        ), "gpt-4.1"
+
+    fixed_up, issues_up, audio_up = run_text_qc(
+        rows, system="SYS", glossary={}, audit_flags={}, tracker=None,
+        text_runner=openai_fix_runner,
+    )
+    assert fix_calls == 1
+    assert fixed_up[0]["id_text"] == "Teks satu diperbaiki"
+    assert fixed_up[1]["id_text"] == "Teks dua"
+    assert len(issues_up) == 1
+    assert audio_up == set()
 
 
 @pytest.mark.parametrize("bad_text", ["not-json", "{}", None])
@@ -599,7 +654,7 @@ def test_run_text_qc_retries_corrupt_json_and_recovers(bad_text):
     )
     assert len(prompts) == 2
     assert prompts[1].startswith("Output sebelumnya SALAH (")
-    assert "Balas HANYA array JSON sesuai skema." in prompts[1]
+    assert 'Balas HANYA objek JSON {"items": [...]} (atau array JSON) sesuai skema.' in prompts[1]
     assert fixed[0]["id_text"] == "Baru"
     assert audio_ids == set()
     assert [i["type"] for i in issues] == ["translation"]

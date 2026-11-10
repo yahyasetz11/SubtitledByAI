@@ -177,10 +177,16 @@ def parse_qc_response(text: str) -> list[dict]:
     cleaned = _FENCE_RE.sub("", text.strip())
     data = json.loads(cleaned)
     if isinstance(data, dict):
-        for value in data.values():
-            if isinstance(value, list):
-                data = value
-                break
+        if isinstance(data.get("items"), list):
+            data = data["items"]
+        else:
+            for value in data.values():
+                if isinstance(value, list):
+                    data = value
+                    break
+            else:
+                if "id" in data:
+                    data = [data]
     if not isinstance(data, list):
         raise ValueError("output bukan array JSON")
     return data
@@ -230,9 +236,9 @@ def build_text_qc_user_prompt(
         "3. Pastikan maksimal 2 pembicara per baris (format '- Baris 1\\n- Baris 2').\n"
         "4. Tandai needs_audio_check=true jika teks 'ja' tampak salah dengar, aneh secara konteks, atau bertumpuk 3+ pembicara.\n"
         '5. Item dengan "context_only": true hanyalah konteks baca-saja dan JANGAN dikembalikan.\n\n'
-        "Balas HANYA array JSON berisi item bermasalah saja (boleh [] jika semua baik):\n"
-        '[{"id": <id>, "fixed_id_text": "<terjemahan baru atau string kosong>", '
-        '"needs_audio_check": true|false, "reason": "<alasan singkat>"}]'
+        'Balas HANYA objek JSON dengan key "items" (boleh {"items": []} jika semua baik):\n'
+        '{"items": [{"id": <id>, "fixed_id_text": "<terjemahan baru atau string kosong>", '
+        '"needs_audio_check": true|false, "reason": "<alasan singkat>"}]}'
     )
 
 
@@ -370,7 +376,7 @@ def _call_qc_json_with_retry(
         return parse_qc_response(response.text), None
     except (json.JSONDecodeError, ValueError) as exc:
         retry_prompt = (
-            f"Output sebelumnya SALAH ({exc}). Balas HANYA array JSON sesuai skema.\n\n"
+            f'Output sebelumnya SALAH ({exc}). Balas HANYA objek JSON {{"items": [...]}} (atau array JSON) sesuai skema.\n\n'
             + prompt
         )
         response, model_used = runner(system, retry_prompt)

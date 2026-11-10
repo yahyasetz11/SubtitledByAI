@@ -512,10 +512,21 @@ input[type=file]:hover {
 
 /* ── QC Report Card ─────────────────────────────────────────────── */
 .qc-card { padding: 20px 22px; margin-bottom: 0; animation: fade-in-up .35s ease both; }
+.qc-details { width: 100%; }
 .qc-header {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  margin-bottom: 12px;
+  cursor: pointer; list-style: none; user-select: none;
 }
+.qc-header::-webkit-details-marker { display: none; }
+.qc-details[open] > .qc-header { margin-bottom: 12px; }
+.qc-title-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.qc-arrow {
+  font-size: .55rem; color: var(--muted2);
+  display: inline-block; transition: transform .2s;
+}
+.qc-details[open] .qc-arrow { transform: rotate(90deg); }
+.qc-header:hover .dl-title,
+.qc-header:hover .qc-arrow { color: var(--text); }
 .qc-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .qc-pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1084,13 +1095,18 @@ textarea:focus {
           <p class="dl-usage" id="usage"></p>
         </div>
 
-        <div class="glass qc-card hidden" id="qc-report-card">
-          <div class="qc-header">
-            <span class="dl-title" style="margin-bottom:0;">Laporan QC</span>
-            <span class="stage-chip" id="qc-mode-badge"></span>
-          </div>
-          <div class="qc-pills" id="qc-summary-pills"></div>
-          <div class="qc-diff-list" id="qc-diff-list"></div>
+        <div class="glass dl-card qc-card hidden" id="qc-report-card">
+          <details open class="qc-details" id="qc-report-details">
+            <summary class="qc-header">
+              <span class="qc-title-wrap">
+                <span class="qc-arrow" aria-hidden="true">&#9654;</span>
+                <span class="dl-title" style="margin-bottom:0;">Laporan QC</span>
+              </span>
+              <span class="stage-chip" id="qc-mode-badge"></span>
+            </summary>
+            <div class="qc-pills" id="qc-summary-pills"></div>
+            <div class="qc-diff-list" id="qc-diff-list"></div>
+          </details>
         </div>
 
         <!-- Subtitle Preview Player -->
@@ -1513,6 +1529,8 @@ function renderQcReport(report) {
     }
   }
 
+  const details = $("qc-report-details");
+  if (details) details.open = true;
   card.classList.remove("hidden");
 }
 
@@ -1657,6 +1675,7 @@ function resetProgress() {
   $("downloads").innerHTML = "";
   $("dl-card").classList.add("hidden");
   $("qc-report-card").classList.add("hidden");
+  if ($("qc-report-details")) $("qc-report-details").open = true;
   $("qc-mode-badge").textContent = "";
   $("qc-summary-pills").textContent = "";
   $("qc-diff-list").textContent = "";
@@ -1685,7 +1704,7 @@ function resetProgress() {
 
 async function finishJob(result) {
   STAGES.forEach((s, i) => {
-    if (!("pipe-" + s) || !$("pipe-" + s).classList.contains("error")) setPipeStage(s, "done");
+    if (!$("pipe-" + s) || !$("pipe-" + s).classList.contains("error")) setPipeStage(s, "done");
     const c = $("conn-" + i);
     if (c) c.className = "pipe-conn done";
   });
