@@ -136,16 +136,23 @@ def audit_local(
     return flags
 
 
+def _compute_slice_bounds(batch: list[dict]) -> tuple[float, float, float]:
+    lo = min(min(float(r["start"]), float(r["end"])) for r in batch)
+    hi = max(max(float(r["start"]), float(r["end"])) for r in batch)
+    slice_start = max(0.0, lo - AUDIO_BUFFER_SECONDS)
+    slice_end = max(slice_start + 0.5, hi + AUDIO_BUFFER_SECONDS)
+    return slice_start, slice_end, slice_end - slice_start
+
+
 def slice_audio_for_batch(
     audio_path: Path,
     batch: list[dict],
     out_path: Path,
 ) -> tuple[Path, float]:
     """Cut audio to cover batch utterances ± buffer. Returns (path, slice_start)."""
-    start = max(0.0, batch[0]["start"] - AUDIO_BUFFER_SECONDS)
-    end = batch[-1]["end"] + AUDIO_BUFFER_SECONDS
-    audio.cut_chunk(audio_path, out_path, start, end)
-    return out_path, start
+    slice_start, slice_end, _ = _compute_slice_bounds(batch)
+    audio.cut_chunk(audio_path, out_path, slice_start, slice_end)
+    return out_path, slice_start
 
 
 def build_qc_system(context_md: str, members_md: str,
@@ -244,6 +251,16 @@ def _safe_item_id(raw_id) -> int | None:
     return None
 
 
+def _join_reasons(prev_reason: str, new_reason: str) -> str:
+    if not new_reason:
+        return prev_reason
+    if not prev_reason:
+        return new_reason
+    if new_reason in prev_reason.split("; "):
+        return prev_reason
+    return f"{prev_reason}; {new_reason}"
+
+
 def apply_text_qc_results(
     rows: list[dict],
     qc_items: list[dict],
@@ -273,11 +290,7 @@ def apply_text_qc_results(
                 prev["fixed_id_text"] = fix
             if needs_audio:
                 prev["needs_audio_check"] = True
-            if reason:
-                if not prev["reason"]:
-                    prev["reason"] = reason
-                elif reason not in prev["reason"].split("; "):
-                    prev["reason"] = f"{prev['reason']}; {reason}"
+            prev["reason"] = _join_reasons(prev["reason"], reason)
 
     updated: list[dict] = []
     issues: list[dict] = []
@@ -316,26 +329,77 @@ def _is_finite_number(val) -> bool:
     return not isinstance(val, bool) and isinstance(val, (int, float)) and math.isfinite(val)
 
 
-def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_rows: list[dict]):
-    if checkpoint_path is None or not checkpoint_path.exists():
+def _has_valid_row_bounds(row: dict) -> bool:
+    return (
+        isinstance(row, dict)
+        and _safe_item_id(row.get("id")) is not None
+        and _is_finite_number(row.get("start"))
+        and _is_finite_number(row.get("end"))
+    )
+
+
+def _read_json_dict(path: Path | None) -> dict | None:
+    if path is None or not path.exists():
         return None
     try:
-        saved = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        saved = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(saved, dict):
+    return saved if isinstance(saved, dict) else None
+
+
+def _write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _call_qc_json_with_retry(
+    runner,
+    system: str,
+    prompt: str,
+    tracker,
+    pass_name: str,
+) -> tuple[list[dict], dict | None]:
+    response, model_used = runner(system, prompt)
+    if tracker is not None:
+        tracker.add(model_used, response.input_tokens, response.output_tokens)
+    try:
+        return parse_qc_response(response.text), None
+    except (json.JSONDecodeError, ValueError) as exc:
+        retry_prompt = (
+            f"Output sebelumnya SALAH ({exc}). Balas HANYA array JSON sesuai skema.\n\n"
+            + prompt
+        )
+        response, model_used = runner(system, retry_prompt)
+        if tracker is not None:
+            tracker.add(model_used, response.input_tokens, response.output_tokens)
+        try:
+            return parse_qc_response(response.text), None
+        except (json.JSONDecodeError, ValueError) as retry_exc:
+            label = "Pass 1B" if pass_name == "text_qc" else "Audio QC"
+            return [], {
+                "pass": pass_name,
+                "type": "warning",
+                "reason": f"Respons {label} tidak valid ({retry_exc})",
+            }
+
+
+def _load_text_qc_checkpoint(checkpoint_path: Path | None, expected_rows: list[dict]):
+    saved = _read_json_dict(checkpoint_path)
+    if saved is None:
         return None
     rows = saved.get("rows")
     issues = saved.get("issues")
     audio_ids = saved.get("audio_ids")
     if not isinstance(rows, list) or not isinstance(issues, list) or not isinstance(audio_ids, list):
         return None
-    if not all(isinstance(r, dict) for r in rows):
+    if not all(_has_valid_row_bounds(r) for r in rows):
         return None
     expected_ids = [int(r["id"]) for r in expected_rows]
     if [_safe_item_id(r.get("id")) for r in rows] != expected_ids:
-        return None
-    if not all(_is_finite_number(r.get("start")) and _is_finite_number(r.get("end")) for r in rows):
         return None
     if not all(isinstance(i, dict) for i in issues):
         return None
@@ -393,29 +457,12 @@ def run_text_qc(
     for start, end, check_ids in windows:
         win_rows = current[start:end]
         prompt = build_text_qc_user_prompt(win_rows, glossary, audit_flags, check_ids=check_ids)
-        response, model_used = text_runner(system, prompt)
-        if tracker is not None:
-            tracker.add(model_used, response.input_tokens, response.output_tokens)
-
-        try:
-            qc_items = parse_qc_response(response.text)
-        except (json.JSONDecodeError, ValueError) as exc:
-            retry_prompt = (
-                f"Output sebelumnya SALAH ({exc}). Balas HANYA array JSON sesuai skema.\n\n"
-                + prompt
-            )
-            response, model_used = text_runner(system, retry_prompt)
-            if tracker is not None:
-                tracker.add(model_used, response.input_tokens, response.output_tokens)
-            try:
-                qc_items = parse_qc_response(response.text)
-            except (json.JSONDecodeError, ValueError) as retry_exc:
-                all_issues.append({
-                    "pass": "text_qc",
-                    "type": "warning",
-                    "reason": f"Respons Pass 1B tidak valid ({retry_exc})",
-                })
-                continue
+        qc_items, warn_issue = _call_qc_json_with_retry(
+            text_runner, system, prompt, tracker, "text_qc",
+        )
+        if warn_issue is not None:
+            all_issues.append(warn_issue)
+            continue
 
         allowed_ids = check_ids if check_ids is not None else {int(r["id"]) for r in win_rows}
         filtered = []
@@ -430,15 +477,11 @@ def run_text_qc(
         all_audio_ids |= win_audio
 
     if checkpoint_path is not None:
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint_path.write_text(
-            json.dumps({
-                "rows": current,
-                "issues": all_issues,
-                "audio_ids": sorted(all_audio_ids),
-            }, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_json(checkpoint_path, {
+            "rows": current,
+            "issues": all_issues,
+            "audio_ids": sorted(all_audio_ids),
+        })
     return current, all_issues, all_audio_ids
 
 
@@ -477,22 +520,23 @@ def build_audio_qc_windows(
     if not flagged_indices:
         return []
 
-    groups: list[list[int]] = [[flagged_indices[0]]]
-    group_start = float(ordered[flagged_indices[0]]["start"])
-    group_end = float(ordered[flagged_indices[0]]["end"])
+    first_idx = flagged_indices[0]
+    groups: list[list[int]] = [[first_idx]]
+    group_start = float(ordered[first_idx]["start"])
+    group_end = max(group_start, float(ordered[first_idx]["end"]))
     for idx in flagged_indices[1:]:
         cur_start = float(ordered[idx]["start"])
         cur_end = float(ordered[idx]["end"])
+        cur_hi = max(cur_start, cur_end)
         gap = cur_start - group_end
-        new_end = max(group_end, cur_end)
-        span = new_end - group_start
+        span = cur_hi - group_start
         if gap <= MAX_SLICE_GAP_SECONDS and span <= MAX_SLICE_SPAN_SECONDS:
             groups[-1].append(idx)
-            group_end = new_end
+            group_end = max(group_end, cur_hi)
         else:
             groups.append([idx])
             group_start = cur_start
-            group_end = cur_end
+            group_end = cur_hi
 
     windows = []
     for grp in groups:
@@ -567,16 +611,17 @@ def _merge_audio_qc_items(qc_results: list[dict]) -> dict[int, dict]:
         f_id = raw_id.strip() if isinstance(raw_id, str) else ""
         raw_reason = item.get("reason")
         reason = raw_reason.strip() if isinstance(raw_reason, str) else str(raw_reason or "").strip()
-        has_timing = "fixed_start" in item or "fixed_end" in item
-        has_split = "split" in item and item["split"] is not None
+        fs = item.get("fixed_start")
+        fe = item.get("fixed_end")
+        raw_split = item.get("split")
 
         if rid not in by_id:
             by_id[rid] = {
                 "fixed_ja": f_ja,
                 "fixed_id_text": f_id,
-                "fixed_start": item.get("fixed_start"),
-                "fixed_end": item.get("fixed_end"),
-                "split": item.get("split") if has_split else None,
+                "fixed_start": fs,
+                "fixed_end": fe,
+                "split": raw_split,
                 "reason": reason,
             }
         else:
@@ -585,16 +630,16 @@ def _merge_audio_qc_items(qc_results: list[dict]) -> dict[int, dict]:
                 prev["fixed_ja"] = f_ja
             if f_id:
                 prev["fixed_id_text"] = f_id
-            if has_timing and (item.get("fixed_start") is not None or item.get("fixed_end") is not None):
-                prev["fixed_start"] = item.get("fixed_start")
-                prev["fixed_end"] = item.get("fixed_end")
-            if has_split:
-                prev["split"] = item.get("split")
-            if reason:
-                if not prev["reason"]:
-                    prev["reason"] = reason
-                elif reason not in prev["reason"].split("; "):
-                    prev["reason"] = f"{prev['reason']}; {reason}"
+            if (fs is not None and fe is not None) or (
+                prev["fixed_start"] is None and prev["fixed_end"] is None and (fs is not None or fe is not None)
+            ):
+                prev["fixed_start"] = fs
+                prev["fixed_end"] = fe
+            if (isinstance(raw_split, list) and len(raw_split) >= 2) or (
+                prev.get("split") is None and raw_split is not None
+            ):
+                prev["split"] = raw_split
+            prev["reason"] = _join_reasons(prev["reason"], reason)
     return by_id
 
 
@@ -743,13 +788,8 @@ def _load_audio_qc_checkpoint(
     checkpoint_path: Path | None,
     expected_batch_ids: list[int],
 ) -> tuple[list[dict], list[dict]] | None:
-    if checkpoint_path is None or not checkpoint_path.exists():
-        return None
-    try:
-        saved = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(saved, dict):
+    saved = _read_json_dict(checkpoint_path)
+    if saved is None:
         return None
     raw_batch_ids = saved.get("batch_ids")
     if not isinstance(raw_batch_ids, list):
@@ -762,15 +802,15 @@ def _load_audio_qc_checkpoint(
     issues = saved.get("issues")
     if not isinstance(fixed, list) or not isinstance(issues, list):
         return None
-    if not all(isinstance(r, dict) for r in fixed):
-        return None
     expected_set = set(expected_batch_ids)
     fixed_ids: set[int] = set()
     for r in fixed:
+        if not _has_valid_row_bounds(r):
+            return None
+        if not isinstance(r.get("ja", ""), str) or not isinstance(r.get("id_text", ""), str):
+            return None
         rid = _safe_item_id(r.get("id"))
         if rid not in expected_set:
-            return None
-        if not (_is_finite_number(r.get("start")) and _is_finite_number(r.get("end"))):
             return None
         fixed_ids.add(rid)
     if fixed_ids != expected_set:
@@ -838,6 +878,8 @@ def run_qc_all(
     if len({int(r["id"]) for r in rows}) != len(rows):
         raise ValueError("id baris duplikat dalam rows")
 
+    ordered_rows = sorted(rows, key=lambda r: (float(r["start"]), float(r["end"])))
+
     if text_runner is None and gemini is not None:
         def text_runner(sys_p, usr_p):
             resp = call_with_retries(lambda: gemini.generate(system=sys_p, user=usr_p))
@@ -851,7 +893,7 @@ def run_qc_all(
 
     # Pass 1A: free local audit
     audit_flags = audit_local(
-        rows,
+        ordered_rows,
         audio_path=audio_path,
         timing_report=timing_report,
         chunk_offsets=chunk_offsets,
@@ -862,7 +904,7 @@ def run_qc_all(
     pass1_ckpt = (checkpoint_dir / "qc_pass1.json") if checkpoint_dir is not None else None
     if text_runner is not None:
         working_rows, pass1_issues, text_audio_ids = run_text_qc(
-            rows,
+            ordered_rows,
             system=system,
             glossary=glossary or {},
             audit_flags=audit_flags,
@@ -871,7 +913,7 @@ def run_qc_all(
             checkpoint_path=pass1_ckpt,
         )
     else:
-        working_rows = [dict(r) for r in rows]
+        working_rows = [dict(r) for r in ordered_rows]
         pass1_issues = []
         text_audio_ids = set()
 
@@ -910,41 +952,22 @@ def run_qc_all(
                 slice_fixed, slice_issues = loaded_ckpt
             else:
                 slice_path = tmp_dir / f"qc_slice_{w_idx:03d}.mp3"
-                slice_start = max(0.0, min(float(r["start"]) for r in batch) - AUDIO_BUFFER_SECONDS)
-                slice_end = max(float(r["end"]) for r in batch) + AUDIO_BUFFER_SECONDS
-                slice_duration = max(0.5, slice_end - slice_start)
+                slice_start, _, slice_duration = _compute_slice_bounds(batch)
                 try:
-                    audio.cut_chunk(audio_path, slice_path, slice_start, slice_end)
+                    slice_audio_for_batch(audio_path, batch, slice_path)
                     user = build_audio_qc_user_prompt(
                         batch, win["context_window"], slice_start, glossary=glossary,
                     )
-                    response, model_used = audio_runner(slice_path, system, user)
-                    if tracker is not None:
-                        tracker.add(model_used, response.input_tokens, response.output_tokens)
-                    try:
-                        qc_results = parse_qc_response(response.text)
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        retry_user = (
-                            f"Output sebelumnya SALAH ({exc}). Balas HANYA array JSON sesuai skema.\n\n"
-                            + user
-                        )
-                        response, model_used = audio_runner(slice_path, system, retry_user)
-                        if tracker is not None:
-                            tracker.add(model_used, response.input_tokens, response.output_tokens)
-                        try:
-                            qc_results = parse_qc_response(response.text)
-                        except (json.JSONDecodeError, ValueError) as retry_exc:
-                            slice_fixed = [dict(r) for r in batch]
-                            slice_issues = [{
-                                "pass": "audio_qc",
-                                "type": "warning",
-                                "reason": f"Respons Audio QC tidak valid ({retry_exc})",
-                            }]
-                        else:
-                            slice_fixed, slice_issues = apply_audio_qc_results(
-                                batch, qc_results,
-                                slice_start=slice_start, slice_duration=slice_duration,
-                            )
+                    qc_results, warn_issue = _call_qc_json_with_retry(
+                        lambda sys_p, usr_p: audio_runner(slice_path, sys_p, usr_p),
+                        system,
+                        user,
+                        tracker,
+                        "audio_qc",
+                    )
+                    if warn_issue is not None:
+                        slice_fixed = [dict(r) for r in batch]
+                        slice_issues = [warn_issue]
                     else:
                         slice_fixed, slice_issues = apply_audio_qc_results(
                             batch, qc_results,
@@ -954,15 +977,11 @@ def run_qc_all(
                     slice_path.unlink(missing_ok=True)
 
                 if ckpt_file is not None:
-                    ckpt_file.parent.mkdir(parents=True, exist_ok=True)
-                    ckpt_file.write_text(
-                        json.dumps({
-                            "batch_ids": batch_ids,
-                            "fixed": slice_fixed,
-                            "issues": slice_issues,
-                        }, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
+                    _write_json(ckpt_file, {
+                        "batch_ids": batch_ids,
+                        "fixed": slice_fixed,
+                        "issues": slice_issues,
+                    })
 
             audio_slices_checked += 1
             checked_audio_ids.update(batch_ids)
@@ -1011,7 +1030,6 @@ def run_qc_all(
 
 def save_qc(rows: list[dict], report_or_issues: dict | list[dict], out_dir: Path) -> None:
     qc_dir = out_dir / "qc"
-    qc_dir.mkdir(parents=True, exist_ok=True)
     if isinstance(report_or_issues, list):
         report = {
             "mode": "hybrid",
@@ -1021,14 +1039,8 @@ def save_qc(rows: list[dict], report_or_issues: dict | list[dict], out_dir: Path
         }
     else:
         report = report_or_issues
-    (qc_dir / "utterances.json").write_text(
-        json.dumps(rows, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    (qc_dir / "report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json(qc_dir / "utterances.json", rows)
+    _write_json(qc_dir / "report.json", report)
 
 
 def load_qc(out_dir: Path) -> list[dict]:
