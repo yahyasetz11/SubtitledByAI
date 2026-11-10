@@ -47,6 +47,52 @@ def test_index_serves_html(client):
     assert "<html" in resp.text.lower()
 
 
+def test_index_contains_fallback_retry_and_qc_elements(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    required_ids = [
+        "timing_model",
+        "qc_model",
+        "deep_audio_qc",
+        "audio-fallback-rows",
+        "afb-key-1",
+        "afb-model-1",
+        "afb-key-3",
+        "afb-model-3",
+        "translate-fallback-rows",
+        "tfb-prov-1",
+        "tfb-key-1",
+        "tfb-model-1",
+        "tfb-prov-3",
+        "tfb-key-3",
+        "tfb-model-3",
+        "qc-report-card",
+        "qc-mode-badge",
+        "qc-summary-pills",
+        "qc-diff-list",
+        "retry-box",
+        "retry-stage-banner",
+        "retry-stage-label",
+        "retry-key-wrap",
+        "retry-gemini-key",
+        "retry-transcribe-wrap",
+        "retry-transcribe-model",
+        "retry-timing-wrap",
+        "retry-timing-model",
+        "retry-translator-wrap",
+        "retry-translator",
+        "retry-translate-wrap",
+        "retry-translate-model",
+        "retry-qc-wrap",
+        "retry-qc-model",
+        "retry-deep-audio-qc",
+        "retry-btn",
+    ]
+    for elem_id in required_ids:
+        assert f'id="{elem_id}"' in html, f"Missing element id={elem_id!r} in index.html"
+
+
 def test_config_reports_providers(client, monkeypatch):
     monkeypatch.setattr("app.audio.ensure_ffmpeg", lambda: True)
     body = client.get("/api/config").json()

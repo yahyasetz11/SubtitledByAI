@@ -194,9 +194,70 @@ input[type=file]:hover {
 
 .check-row input[type=checkbox] { accent-color: var(--violet); }
 
-.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
+.field-row > .field { margin-bottom: 0; }
 
 .divider { height: 1px; background: var(--border); margin: 20px 0; }
+
+/* ── Fallback collapsible panels ────────────────────────────────── */
+.fallback-details {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: rgba(0,0,0,.2);
+  padding: 11px 14px;
+}
+.fallback-details summary {
+  cursor: pointer;
+  color: var(--muted2);
+  font-size: .75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fallback-details summary::-webkit-details-marker { display: none; }
+.fallback-details summary::before {
+  content: "▶";
+  font-size: .55rem;
+  display: inline-block;
+  transition: transform .2s;
+}
+.fallback-details[open] summary::before { transform: rotate(90deg); }
+.fallback-details summary:hover { color: var(--text); }
+.fallback-hint {
+  font-size: .75rem;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+.fallback-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.fallback-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fallback-slot-lbl {
+  flex: 0 0 50px;
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--muted2);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.fallback-row select {
+  flex: 1 1 160px;
+  padding: 8px 11px;
+  font-size: .84rem;
+}
 
 /* ── Settings panel ─────────────────────────────────────────────── */
 .settings-panel { padding: 14px 20px; margin-bottom: 12px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
@@ -404,6 +465,7 @@ input[type=file]:hover {
 .bd-timing    { background:rgba(251,146,60,.12);  color:var(--c-timing);    }
 .bd-qc        { background:rgba(129,140,248,.12); color:var(--c-qc);        }
 .bd-format    { background:rgba(123,216,143,.12); color:var(--c-format);    }
+.bd-load_transcript { background:rgba(56,189,248,.12); color:var(--c-download); }
 .bd-done      { background:rgba(123,216,143,.12); color:var(--c-done);      }
 .bd-error     { background:rgba(255,107,107,.12); color:var(--c-error);     }
 .bd-job       { background:rgba(255,255,255,.06); color:var(--muted2);      }
@@ -446,8 +508,116 @@ input[type=file]:hover {
   color: var(--muted);
 }
 
-/* ── Retry row ──────────────────────────────────────────────────── */
-.retry-row { text-align: center; padding-top: 4px; }
+/* ── QC Report Card ─────────────────────────────────────────────── */
+.qc-card { padding: 20px 22px; margin-bottom: 0; animation: fade-in-up .35s ease both; }
+.qc-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 12px;
+}
+.qc-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.qc-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+  font-size: .74rem; color: var(--muted2);
+}
+.qc-pill.has-val {
+  background: rgba(129,140,248,.12);
+  border-color: rgba(129,140,248,.3);
+  color: var(--text);
+}
+.qc-pill.is-warn {
+  background: rgba(251,191,36,.12);
+  border-color: rgba(251,191,36,.35);
+  color: #fde68a;
+}
+.qc-pill-val { font-weight: 700; color: inherit; }
+.qc-diff-list {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 280px; overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(168,85,247,.3) transparent;
+}
+.qc-empty { font-size: .8rem; color: var(--muted2); font-style: italic; }
+.qc-issue {
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: rgba(0,0,0,.28);
+  border: 1px solid var(--border);
+  font-size: .78rem;
+}
+.qc-issue-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.qc-type-badge {
+  font-size: .63rem; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.qc-type-translation { background: rgba(244,114,182,.14); color: var(--c-translate); }
+.qc-type-ja          { background: rgba(168,85,247,.14);  color: var(--c-transcribe); }
+.qc-type-timing      { background: rgba(251,146,60,.14);  color: var(--c-timing); }
+.qc-type-split       { background: rgba(56,189,248,.14);  color: var(--c-download); }
+.qc-type-warning     { background: rgba(251,191,36,.16);  color: var(--c-chunk); }
+.qc-type-audio_flag  { background: rgba(129,140,248,.16); color: var(--c-qc); }
+.qc-type-other       { background: rgba(255,255,255,.08); color: var(--muted2); }
+.qc-issue-id {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: .72rem; color: var(--muted2);
+}
+.qc-issue-pass { font-size: .7rem; color: var(--muted); }
+.qc-diff-old { color: #fca5a5; word-break: break-word; line-height: 1.45; }
+.qc-diff-new { color: #86efac; word-break: break-word; line-height: 1.45; margin-top: 2px; }
+.qc-issue-reason { color: var(--muted2); font-size: .73rem; margin-top: 4px; line-height: 1.4; }
+
+/* ── Retry box ──────────────────────────────────────────────────── */
+.retry-card {
+  padding: 16px 18px;
+  border-color: rgba(255,107,107,.25);
+}
+.retry-stage-banner {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  background: rgba(255,107,107,.1);
+  border: 1px solid rgba(255,107,107,.25);
+  color: #fca5a5;
+  font-size: .8rem; font-weight: 600;
+}
+.retry-stage-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--c-error);
+  flex-shrink: 0;
+}
+.retry-controls {
+  margin-bottom: 12px;
+  display: flex; align-items: center; justify-content: center;
+  gap: 12px; flex-wrap: wrap;
+}
+.retry-control-wrap {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+.retry-control-wrap label {
+  font-size: .78rem; color: var(--muted2); font-weight: 600;
+}
+.retry-control-wrap .field-select {
+  width: auto; min-width: 150px; max-width: 220px;
+  font-size: .8rem; padding: 6px 10px;
+  background: rgba(15,23,42,.85);
+  border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+}
+.retry-check-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .8rem; color: var(--text); cursor: pointer;
+  margin-left: 4px;
+}
+.retry-check-label input[type=checkbox] { accent-color: var(--violet); }
+.retry-row { text-align: center; padding-top: 2px; }
 
 /* ── Subtitle Preview Player ─────────────────────────────────────── */
 .preview-card {
@@ -781,6 +951,71 @@ textarea:focus {
         </div>
       </div>
 
+      <div class="field-row mode-full">
+        <div class="field">
+          <label class="field-label" for="timing_model">Model Timing</label>
+          <select id="timing_model"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="qc_model">Model Audio QC</label>
+          <select id="qc_model"></select>
+        </div>
+      </div>
+
+      <div class="field mode-full">
+        <label class="check-row" style="margin-top:0;" for="deep_audio_qc">
+          <input type="checkbox" id="deep_audio_qc">
+          <span><strong>Deep Audio QC</strong> — audit audio semua batch (lebih menyeluruh, pakai lebih banyak kuota; default: hanya segmen yang ditandai)</span>
+        </label>
+      </div>
+
+      <details class="field mode-full mode-trans fallback-details" id="audio-fallback-details">
+        <summary>Audio Fallback (opsional, maks 3 slot)</summary>
+        <p class="fallback-hint">Dipakai berurutan jika key/model utama gagal (429/5xx/403) pada tahap Transkripsi, Timing, atau Audio QC.</p>
+        <div id="audio-fallback-rows" class="fallback-rows">
+          <div class="fallback-row">
+            <span class="fallback-slot-lbl">Slot 1</span>
+            <select id="afb-key-1" aria-label="Audio Fallback Slot 1 API Key"><option value="">— Tidak aktif —</option></select>
+            <select id="afb-model-1" aria-label="Audio Fallback Slot 1 Model"><option value="">— Pilih model —</option></select>
+          </div>
+          <div class="fallback-row">
+            <span class="fallback-slot-lbl">Slot 2</span>
+            <select id="afb-key-2" aria-label="Audio Fallback Slot 2 API Key"><option value="">— Tidak aktif —</option></select>
+            <select id="afb-model-2" aria-label="Audio Fallback Slot 2 Model"><option value="">— Pilih model —</option></select>
+          </div>
+          <div class="fallback-row">
+            <span class="fallback-slot-lbl">Slot 3</span>
+            <select id="afb-key-3" aria-label="Audio Fallback Slot 3 API Key"><option value="">— Tidak aktif —</option></select>
+            <select id="afb-model-3" aria-label="Audio Fallback Slot 3 Model"><option value="">— Pilih model —</option></select>
+          </div>
+        </div>
+      </details>
+
+      <details class="field mode-full mode-tl fallback-details" id="translate-fallback-details">
+        <summary>Translation Fallback (opsional, maks 3 slot)</summary>
+        <p class="fallback-hint">Dipakai berurutan jika provider/model utama gagal pada tahap Translasi atau Text QC.</p>
+        <div id="translate-fallback-rows" class="fallback-rows">
+          <div class="fallback-row">
+            <span class="fallback-slot-lbl">Slot 1</span>
+            <select id="tfb-prov-1" aria-label="Translation Fallback Slot 1 Provider"><option value="">— Tidak aktif —</option></select>
+            <select id="tfb-key-1" class="hidden" aria-label="Translation Fallback Slot 1 Gemini Key"></select>
+            <select id="tfb-model-1" aria-label="Translation Fallback Slot 1 Model"><option value="">— Pilih model —</option></select>
+          </div>
+          <div class="fallback-row">
+            <span class="fallback-slot-lbl">Slot 2</span>
+            <select id="tfb-prov-2" aria-label="Translation Fallback Slot 2 Provider"><option value="">— Tidak aktif —</option></select>
+            <select id="tfb-key-2" class="hidden" aria-label="Translation Fallback Slot 2 Gemini Key"></select>
+            <select id="tfb-model-2" aria-label="Translation Fallback Slot 2 Model"><option value="">— Pilih model —</option></select>
+          </div>
+          <div class="fallback-row">
+            <span class="fallback-slot-lbl">Slot 3</span>
+            <select id="tfb-prov-3" aria-label="Translation Fallback Slot 3 Provider"><option value="">— Tidak aktif —</option></select>
+            <select id="tfb-key-3" class="hidden" aria-label="Translation Fallback Slot 3 Gemini Key"></select>
+            <select id="tfb-model-3" aria-label="Translation Fallback Slot 3 Model"><option value="">— Pilih model —</option></select>
+          </div>
+        </div>
+      </details>
+
       <button type="submit" class="btn-primary" id="start-btn">
         Mulai Proses
       </button>
@@ -847,6 +1082,15 @@ textarea:focus {
           <p class="dl-usage" id="usage"></p>
         </div>
 
+        <div class="glass qc-card hidden" id="qc-report-card">
+          <div class="qc-header">
+            <span class="dl-title" style="margin-bottom:0;">Laporan QC</span>
+            <span class="stage-chip" id="qc-mode-badge"></span>
+          </div>
+          <div class="qc-pills" id="qc-summary-pills"></div>
+          <div class="qc-diff-list" id="qc-diff-list"></div>
+        </div>
+
         <!-- Subtitle Preview Player -->
         <div class="glass preview-card hidden" id="preview-card">
           <div class="preview-label">Preview Subtitle</div>
@@ -856,10 +1100,46 @@ textarea:focus {
           <p class="preview-note" id="preview-note"></p>
         </div>
 
-        <div class="retry-row">
-          <button class="btn-secondary hidden" id="retry-btn" type="button">
-            &#x21a9; Coba Lagi (lanjut dari checkpoint)
-          </button>
+        <div class="glass retry-card hidden" id="retry-box">
+          <div class="retry-stage-banner" id="retry-stage-banner">
+            <span class="retry-stage-dot"></span>
+            <span id="retry-stage-label">Tahap gagal: —</span>
+          </div>
+          <div class="retry-controls" id="retry-controls">
+            <div class="retry-control-wrap hidden" id="retry-key-wrap">
+              <label for="retry-gemini-key">API Key:</label>
+              <select id="retry-gemini-key" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-transcribe-wrap">
+              <label for="retry-transcribe-model">Model Transkripsi:</label>
+              <select id="retry-transcribe-model" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-timing-wrap">
+              <label for="retry-timing-model">Model Timing:</label>
+              <select id="retry-timing-model" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-translator-wrap">
+              <label for="retry-translator">Provider:</label>
+              <select id="retry-translator" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-translate-wrap">
+              <label for="retry-translate-model">Model Terjemahan:</label>
+              <select id="retry-translate-model" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-qc-wrap">
+              <label for="retry-qc-model">Model Audio QC:</label>
+              <select id="retry-qc-model" class="field-select"></select>
+              <label class="retry-check-label" for="retry-deep-audio-qc">
+                <input type="checkbox" id="retry-deep-audio-qc">
+                Deep Audio QC
+              </label>
+            </div>
+          </div>
+          <div class="retry-row">
+            <button class="btn-secondary" id="retry-btn" type="button">
+              &#x21a9; Coba Lagi (lanjut dari checkpoint)
+            </button>
+          </div>
         </div>
       </div><!-- /progress-left -->
 
@@ -882,21 +1162,347 @@ textarea:focus {
 const $ = id => document.getElementById(id);
 let jobId = null, es = null;
 let currentMode = "full";
+let globalConfig = null;
+let lastFailedStage = null;
+let lastQcReport = null;
+let currentJobParams = null;
+let currentJobMode = null;
 
 const PROVIDER_LABELS = { gemini:"Gemini", openai:"OpenAI", anthropic:"Anthropic Claude" };
+const STAGE_LABELS = {
+  download: "Download",
+  normalize: "Normalize",
+  chunk: "Chunking",
+  load_transcript: "Muat Transkrip",
+  transcribe: "Transkripsi",
+  translate: "Translasi",
+  timing: "Timing",
+  qc: "QC",
+  format: "Format Output",
+  init: "Inisialisasi",
+};
+
+function populateSelect(sel, items, selectedVal) {
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const item of (items || [])) {
+    const opt = document.createElement("option");
+    if (typeof item === "object" && item !== null) {
+      opt.value = item.value;
+      opt.textContent = item.label;
+    } else {
+      opt.value = item;
+      opt.textContent = item;
+    }
+    sel.appendChild(opt);
+  }
+  if (selectedVal && Array.from(sel.options).some(o => o.value === selectedVal)) {
+    sel.value = selectedVal;
+  }
+}
 
 function populateTranslateModelDropdown(modelsConfig, provider) {
   const sel = $("translate_model");
-  sel.innerHTML = "";
   const models = (modelsConfig.translation && modelsConfig.translation[provider]) || [];
   const def = modelsConfig.defaults && modelsConfig.defaults.translation && modelsConfig.defaults.translation[provider];
-  for (const m of models) {
-    const opt = document.createElement("option");
-    opt.value = m;
-    opt.textContent = m;
-    if (m === def) opt.selected = true;
-    sel.appendChild(opt);
+  populateSelect(sel, models, def || "");
+}
+
+function buildFallbackRows(cfg) {
+  const keys = (cfg && cfg.gemini_keys && cfg.gemini_keys.length > 0)
+    ? cfg.gemini_keys
+    : ["Default"];
+  const activeKey = ($("gemini-key-sel") && $("gemini-key-sel").value)
+    || (cfg && cfg.active_gemini_key)
+    || keys[0];
+  const audioModels = (cfg && cfg.models && cfg.models.transcription) || [];
+  const availProviders = Object.entries((cfg && cfg.providers) || {})
+    .filter(([, ok]) => Boolean(ok))
+    .map(([p]) => ({ value: p, label: PROVIDER_LABELS[p] || p }));
+
+  for (let i = 1; i <= 3; i++) {
+    const aKey = $("afb-key-" + i);
+    const aMod = $("afb-model-" + i);
+    if (aKey) {
+      const prevKey = aKey.value;
+      populateSelect(
+        aKey,
+        [{ value: "", label: "— Tidak aktif —" }, ...keys.map(k => ({ value: k, label: k }))],
+        prevKey
+      );
+    }
+    if (aMod) {
+      const prevMod = aMod.value;
+      populateSelect(
+        aMod,
+        [{ value: "", label: "— Pilih model —" }, ...audioModels.map(m => ({ value: m, label: m }))],
+        prevMod
+      );
+    }
+
+    const tProv = $("tfb-prov-" + i);
+    const tKey = $("tfb-key-" + i);
+    const tMod = $("tfb-model-" + i);
+    if (tKey) {
+      const prevTKey = tKey.value;
+      populateSelect(tKey, keys.map(k => ({ value: k, label: k })), prevTKey || activeKey);
+    }
+    if (tProv) {
+      const prevProv = tProv.value;
+      populateSelect(
+        tProv,
+        [{ value: "", label: "— Tidak aktif —" }, ...availProviders],
+        prevProv
+      );
+      const syncTlRow = () => {
+        const prov = tProv.value;
+        const showKey = prov === "gemini" && keys.length > 0;
+        if (tKey) {
+          tKey.classList.toggle("hidden", !showKey);
+          if (showKey && !tKey.value) tKey.value = activeKey;
+        }
+        const prevTMod = tMod ? tMod.value : "";
+        const models = (prov && cfg && cfg.models && cfg.models.translation && cfg.models.translation[prov]) || [];
+        if (tMod) {
+          populateSelect(
+            tMod,
+            [{ value: "", label: "— Pilih model —" }, ...models.map(m => ({ value: m, label: m }))],
+            prevTMod
+          );
+        }
+      };
+      if (!tProv.dataset.bound) {
+        tProv.addEventListener("change", syncTlRow);
+        tProv.dataset.bound = "1";
+      }
+      syncTlRow();
+    }
   }
+}
+
+async function showRetryBox(stage) {
+  const retryBox = $("retry-box");
+  if (!retryBox) return;
+
+  if (!currentJobParams && jobId) {
+    try {
+      const jr = await fetch("/api/jobs/" + jobId);
+      if (jr.ok) {
+        const jdata = await jr.json();
+        currentJobParams = jdata.params || {};
+        currentJobMode = (jdata.params && jdata.params.mode) || "full";
+        if (jdata.failed_stage) currentJobParams._failed_stage = jdata.failed_stage;
+      }
+    } catch (_) {}
+  }
+
+  const params = currentJobParams || {};
+  const effectiveStage = stage || lastFailedStage || params._failed_stage || "translate";
+  const effectiveMode = currentJobMode || params.mode || currentMode || "full";
+  lastFailedStage = effectiveStage;
+
+  const stageLbl = $("retry-stage-label");
+  if (stageLbl) {
+    stageLbl.textContent = "Tahap gagal: " + (STAGE_LABELS[effectiveStage] || effectiveStage);
+  }
+
+  const hasKeys = Boolean(globalConfig && globalConfig.gemini_keys && globalConfig.gemini_keys.length > 0);
+  const availProviders = Object.entries((globalConfig && globalConfig.providers) || {})
+    .filter(([, ok]) => Boolean(ok))
+    .map(([p]) => ({ value: p, label: PROVIDER_LABELS[p] || p }));
+
+  let activeProv = params.translator || ($("translator") && $("translator").value) || "gemini";
+  if (availProviders.length > 0 && !availProviders.some(p => p.value === activeProv)) {
+    activeProv = availProviders[0].value;
+  }
+
+  if (globalConfig) {
+    if (hasKeys) {
+      const defKey = params.gemini_key_label
+        || ($("gemini-key-sel") && $("gemini-key-sel").value)
+        || globalConfig.active_gemini_key
+        || globalConfig.gemini_keys[0];
+      populateSelect($("retry-gemini-key"), globalConfig.gemini_keys, defKey);
+    }
+    if (globalConfig.models) {
+      const audioModels = globalConfig.models.transcription || [];
+      populateSelect(
+        $("retry-transcribe-model"),
+        audioModels,
+        params.transcribe_model || ($("transcribe_model") && $("transcribe_model").value) || ""
+      );
+      populateSelect(
+        $("retry-timing-model"),
+        audioModels,
+        params.timing_model || ($("timing_model") && $("timing_model").value) || ""
+      );
+      populateSelect(
+        $("retry-qc-model"),
+        audioModels,
+        params.qc_model || ($("qc_model") && $("qc_model").value) || ""
+      );
+      populateSelect($("retry-translator"), availProviders, activeProv);
+      const chosenProv = ($("retry-translator") && $("retry-translator").value) || activeProv;
+      const tlModels = (globalConfig.models.translation && globalConfig.models.translation[chosenProv]) || [];
+      const tlDef = (globalConfig.models.defaults && globalConfig.models.defaults.translation && globalConfig.models.defaults.translation[chosenProv]) || "";
+      populateSelect(
+        $("retry-translate-model"),
+        tlModels,
+        params.translate_model || ($("translate_model") && $("translate_model").value) || tlDef
+      );
+      activeProv = chosenProv;
+    }
+  }
+
+  const deepCheck = $("retry-deep-audio-qc");
+  if (deepCheck) {
+    deepCheck.checked = Boolean(
+      params.deep_audio_qc !== undefined
+        ? params.deep_audio_qc
+        : ($("deep_audio_qc") && $("deep_audio_qc").checked)
+    );
+  }
+
+  const isTranscribe = effectiveStage === "transcribe";
+  const isTiming = effectiveStage === "timing";
+  const isTranslate = effectiveStage === "translate" || (effectiveStage === "qc" && effectiveMode === "translation_only");
+  const isAudioQc = effectiveStage === "qc" && effectiveMode !== "translation_only";
+
+  const showTranscribe = isTranscribe;
+  const showTiming = isTiming;
+  const showTranslator = isTranslate || isAudioQc;
+  const showTranslate = isTranslate || isAudioQc;
+  const showQc = isAudioQc;
+  const showKey = hasKeys && (isTranscribe || isTiming || isAudioQc || (isTranslate && activeProv === "gemini"));
+
+  $("retry-key-wrap").classList.toggle("hidden", !showKey);
+  $("retry-transcribe-wrap").classList.toggle("hidden", !showTranscribe);
+  $("retry-timing-wrap").classList.toggle("hidden", !showTiming);
+  $("retry-translator-wrap").classList.toggle("hidden", !showTranslator);
+  $("retry-translate-wrap").classList.toggle("hidden", !showTranslate);
+  $("retry-qc-wrap").classList.toggle("hidden", !showQc);
+
+  const hasControls = showKey || showTranscribe || showTiming || showTranslator || showTranslate || showQc;
+  $("retry-controls").classList.toggle("hidden", !hasControls);
+  retryBox.classList.remove("hidden");
+}
+
+function hideRetryBox() {
+  const retryBox = $("retry-box");
+  if (retryBox) retryBox.classList.add("hidden");
+}
+
+function renderQcReport(report) {
+  const card = $("qc-report-card");
+  const badge = $("qc-mode-badge");
+  const pillsEl = $("qc-summary-pills");
+  const listEl = $("qc-diff-list");
+  if (!card || !badge || !pillsEl || !listEl) return;
+  if (!report || typeof report !== "object") {
+    card.classList.add("hidden");
+    return;
+  }
+
+  pillsEl.textContent = "";
+  listEl.textContent = "";
+
+  const MODE_LABELS = {
+    hybrid: "HYBRID",
+    deep: "DEEP AUDIO",
+    text_only: "TEXT ONLY",
+  };
+  const modeKey = String(report.mode || "").toLowerCase();
+  badge.textContent = MODE_LABELS[modeKey] || (modeKey ? modeKey.toUpperCase() : "QC");
+
+  const summary = (report.summary && typeof report.summary === "object") ? report.summary : {};
+  const pillSpecs = [
+    { label: "Terjemahan", value: Number(summary.translation_fixes || 0), warn: false },
+    { label: "JP Diperbaiki", value: Number(summary.ja_fixes || 0), warn: false },
+    { label: "Timing", value: Number(summary.timing_fixes || 0), warn: false },
+    { label: "Split", value: Number(summary.splits || 0), warn: false },
+    { label: "Warning", value: Number(summary.unresolved_warnings || 0), warn: true },
+  ];
+
+  for (const p of pillSpecs) {
+    const pill = document.createElement("div");
+    pill.className = "qc-pill" + (p.value > 0 ? (p.warn ? " is-warn" : " has-val") : "");
+    const lbl = document.createElement("span");
+    lbl.className = "qc-pill-lbl";
+    lbl.textContent = p.label;
+    const val = document.createElement("span");
+    val.className = "qc-pill-val";
+    val.textContent = String(p.value);
+    pill.append(lbl, val);
+    pillsEl.appendChild(pill);
+  }
+
+  const issues = Array.isArray(report.issues) ? report.issues : [];
+  if (issues.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "qc-empty";
+    empty.textContent = "Tidak ada perbaikan atau peringatan.";
+    listEl.appendChild(empty);
+  } else {
+    const TYPE_INFO = {
+      translation: { cls: "translation", label: "Terjemahan" },
+      ja:          { cls: "ja",          label: "JP" },
+      timing:      { cls: "timing",      label: "Timing" },
+      split:       { cls: "split",       label: "Split" },
+      warning:     { cls: "warning",     label: "Warning" },
+      audio_flag:  { cls: "audio_flag",  label: "Flag Audio" },
+    };
+    for (const iss of issues) {
+      if (!iss || typeof iss !== "object") continue;
+      const item = document.createElement("div");
+      item.className = "qc-issue";
+
+      const meta = document.createElement("div");
+      meta.className = "qc-issue-meta";
+      const tKey = String(iss.type || "").toLowerCase();
+      const tInfo = TYPE_INFO[tKey] || { cls: "other", label: tKey || "Issue" };
+
+      const tBadge = document.createElement("span");
+      tBadge.className = "qc-type-badge qc-type-" + tInfo.cls;
+      tBadge.textContent = tInfo.label;
+      meta.appendChild(tBadge);
+
+      if (iss.id !== undefined && iss.id !== null && iss.id !== "") {
+        const idSpan = document.createElement("span");
+        idSpan.className = "qc-issue-id";
+        idSpan.textContent = "#" + String(iss.id);
+        meta.appendChild(idSpan);
+      }
+      if (iss.pass) {
+        const passSpan = document.createElement("span");
+        passSpan.className = "qc-issue-pass";
+        passSpan.textContent = String(iss.pass);
+        meta.appendChild(passSpan);
+      }
+      item.appendChild(meta);
+
+      if (iss.original !== undefined && iss.original !== null && String(iss.original) !== "") {
+        const oldDiv = document.createElement("div");
+        oldDiv.className = "qc-diff-old";
+        oldDiv.textContent = "- " + String(iss.original);
+        item.appendChild(oldDiv);
+      }
+      if (iss.fixed !== undefined && iss.fixed !== null && String(iss.fixed) !== "") {
+        const newDiv = document.createElement("div");
+        newDiv.className = "qc-diff-new";
+        newDiv.textContent = "+ " + String(iss.fixed);
+        item.appendChild(newDiv);
+      }
+      if (iss.reason) {
+        const rDiv = document.createElement("div");
+        rDiv.className = "qc-issue-reason";
+        rDiv.textContent = String(iss.reason);
+        item.appendChild(rDiv);
+      }
+      listEl.appendChild(item);
+    }
+  }
+
+  card.classList.remove("hidden");
 }
 
 const STAGES = ["download","normalize","chunk","transcribe","translate","timing","qc","format"];
@@ -914,6 +1520,7 @@ async function loadConfig() {
   try { cfg = await (await fetch("/api/config")).json(); }
   catch (e) { showBanner("Tidak bisa menghubungi server: " + e); $("start-btn").disabled = true; return; }
   if (!cfg.ok) { showBanner(cfg.error); $("start-btn").disabled = true; return; }
+  globalConfig = cfg;
   if (!cfg.ffmpeg) {
     showBanner("ffmpeg/ffprobe tidak ditemukan di PATH. Install: winget install Gyan.FFmpeg lalu restart terminal.");
     $("start-btn").disabled = true;
@@ -929,32 +1536,27 @@ async function loadConfig() {
 
   // Populate model dropdowns
   if (cfg.models) {
-    // Transcription models
-    const tmSel = $("transcribe_model");
-    tmSel.innerHTML = "";
-    for (const m of (cfg.models.transcription || [])) {
-      const opt = document.createElement("option");
-      opt.value = m;
-      opt.textContent = m;
-      if (m === (cfg.models.defaults && cfg.models.defaults.transcription)) opt.selected = true;
-      tmSel.appendChild(opt);
-    }
+    const audioModels = cfg.models.transcription || [];
+    const defs = cfg.models.defaults || {};
+    populateSelect($("transcribe_model"), audioModels, defs.transcription || "");
+    populateSelect($("timing_model"), audioModels, defs.timing || defs.transcription || "");
+    populateSelect($("qc_model"), audioModels, defs.qc || defs.transcription || "");
+
     // Translation model variants for current provider
     populateTranslateModelDropdown(cfg.models, sel.value);
     // Keep translation model dropdown in sync when provider changes
-    sel.addEventListener("change", () => populateTranslateModelDropdown(cfg.models, sel.value));
+    if (!sel.dataset.bound) {
+      sel.addEventListener("change", () => populateTranslateModelDropdown(cfg.models, sel.value));
+      sel.dataset.bound = "1";
+    }
   }
 
   // Populate Gemini key selector
   const ksel = $("gemini-key-sel");
-  ksel.innerHTML = "";
-  for (const label of (cfg.gemini_keys || ["Default"])) {
-    const opt = document.createElement("option");
-    opt.value = label;
-    opt.textContent = label;
-    ksel.appendChild(opt);
-  }
-  ksel.value = cfg.active_gemini_key || "Default";
+  populateSelect(ksel, cfg.gemini_keys || ["Default"], cfg.active_gemini_key || "Default");
+
+  // Populate 3-slot fallback chains
+  buildFallbackRows(cfg);
 }
 
 // ── Pipeline bar ─────────────────────────────────────────────────
@@ -1034,12 +1636,18 @@ function logLine(stage, status, msg) {
 
 // ── Reset & finish ───────────────────────────────────────────────
 function resetProgress() {
+  lastFailedStage = null;
+  lastQcReport = null;
   document.querySelector(".app").classList.add("wide");
   $("progress-section").classList.remove("hidden");
   $("log").innerHTML = "";
   $("usage").textContent = "";
   $("downloads").innerHTML = "";
   $("dl-card").classList.add("hidden");
+  $("qc-report-card").classList.add("hidden");
+  $("qc-mode-badge").textContent = "";
+  $("qc-summary-pills").textContent = "";
+  $("qc-diff-list").textContent = "";
   // Reset preview player
   if (octopusInstance) {
     try { octopusInstance.dispose(); } catch(_) {}
@@ -1048,7 +1656,7 @@ function resetProgress() {
   $("preview-card").classList.add("hidden");
   $("preview-player-wrap").innerHTML = "";
   $("preview-note").textContent = "";
-  $("retry-btn").classList.add("hidden");
+  hideRetryBox();
   // Show & arm the cancel button
   const cb = $("cancel-btn");
   cb.classList.remove("hidden");
@@ -1063,15 +1671,15 @@ function resetProgress() {
   });
 }
 
-function finishJob(result) {
+async function finishJob(result) {
   STAGES.forEach((s, i) => {
     if (!("pipe-" + s) || !$("pipe-" + s).classList.contains("error")) setPipeStage(s, "done");
     const c = $("conn-" + i);
     if (c) c.className = "pipe-conn done";
   });
   $("stage-chip").classList.add("hidden");
-  $("usage").textContent = result.usage.line || "";
-  for (const name of result.files) {
+  $("usage").textContent = (result.usage && result.usage.line) || "";
+  for (const name of (result.files || [])) {
     const a = document.createElement("a");
     a.href = "/api/jobs/" + jobId + "/files/" + name;
     a.className = "dl-link";
@@ -1079,7 +1687,19 @@ function finishJob(result) {
     $("downloads").appendChild(a);
   }
   $("dl-card").classList.remove("hidden");
-  buildPreview(result.files);
+  buildPreview(result.files || []);
+  if (lastQcReport) {
+    renderQcReport(lastQcReport);
+  } else if (result.files && result.files.includes("qc_report.json")) {
+    const capturedJobId = jobId;
+    try {
+      const resp = await fetch("/api/jobs/" + capturedJobId + "/files/qc_report.json");
+      if (resp.ok && jobId === capturedJobId) {
+        const rep = await resp.json();
+        renderQcReport(rep);
+      }
+    } catch (_) {}
+  }
 }
 
 // ── Subtitle Preview ─────────────────────────────────────────────
@@ -1245,10 +1865,14 @@ function listen(id) {
   es.onmessage = msg => {
     const ev = JSON.parse(msg.data);
     updatePipeline(ev.stage, ev.status);
+    if (ev.stage === "qc" && ev.status === "done" && ev.result && ev.result.report) {
+      lastQcReport = ev.result.report;
+    }
     if (ev.status === "error") {
+      lastFailedStage = ev.failed_stage || ev.stage;
       logLine(ev.stage, "error", "GAGAL: " + (ev.message || ""));
       hideCancelBtn();
-      $("retry-btn").classList.remove("hidden");
+      showRetryBox(lastFailedStage);
       return;
     }
     if (ev.status === "cancelled") {
@@ -1303,6 +1927,64 @@ $("job-form").addEventListener("submit", async e => {
     return;
   }
 
+  // Validate 3-slot fallback chains (reject half-filled slots before POST)
+  const audioSlots = [];
+  if (currentMode !== "translation_only") {
+    for (let i = 1; i <= 3; i++) {
+      const kSel = $("afb-key-" + i);
+      const mSel = $("afb-model-" + i);
+      const k = kSel ? kSel.value.trim() : "";
+      const m = mSel ? mSel.value.trim() : "";
+      if (!k && !m) continue;
+      if (!k || !m) {
+        const details = $("audio-fallback-details");
+        if (details) details.open = true;
+        const target = !k ? kSel : mSel;
+        if (target) target.focus();
+        alert(`Audio Fallback Slot ${i}: pilih API Key dan Model sekaligus (atau kosongkan keduanya).`);
+        return;
+      }
+      audioSlots.push({ key_label: k, model: m });
+    }
+  }
+
+  const tlSlots = [];
+  if (currentMode !== "transcription_only") {
+    for (let i = 1; i <= 3; i++) {
+      const pSel = $("tfb-prov-" + i);
+      const kSel = $("tfb-key-" + i);
+      const mSel = $("tfb-model-" + i);
+      const p = pSel ? pSel.value.trim() : "";
+      const m = mSel ? mSel.value.trim() : "";
+      const k = kSel ? kSel.value.trim() : "";
+      if (!p && !m) continue;
+      if (!p || !m) {
+        const details = $("translate-fallback-details");
+        if (details) details.open = true;
+        const target = !p ? pSel : mSel;
+        if (target) target.focus();
+        alert(`Translation Fallback Slot ${i}: pilih Provider dan Model sekaligus (atau kosongkan keduanya).`);
+        return;
+      }
+      if (p === "gemini") {
+        if (!k) {
+          const details = $("translate-fallback-details");
+          if (details) details.open = true;
+          if (kSel) kSel.focus();
+          alert(`Translation Fallback Slot ${i}: pilih Gemini API Key.`);
+          return;
+        }
+        tlSlots.push({ provider: p, key_label: k, model: m });
+      } else {
+        tlSlots.push({ provider: p, model: m });
+      }
+    }
+  }
+
+  const timingModelVal = currentMode === "full" && $("timing_model") ? $("timing_model").value : "";
+  const qcModelVal = currentMode === "full" && $("qc_model") ? $("qc_model").value : "";
+  const deepAudioQcVal = currentMode === "full" && $("deep_audio_qc") ? $("deep_audio_qc").checked : false;
+
   const fd = new FormData();
   fd.append("mode", currentMode);
   fd.append("source", source);
@@ -1313,6 +1995,11 @@ $("job-form").addEventListener("submit", async e => {
   fd.append("translator", $("translator").value);
   fd.append("transcribe_model", $("transcribe_model").value);
   fd.append("translate_model", $("translate_model").value);
+  fd.append("timing_model", timingModelVal);
+  fd.append("qc_model", qcModelVal);
+  fd.append("deep_audio_qc", deepAudioQcVal ? "true" : "false");
+  fd.append("audio_fallback", JSON.stringify(audioSlots));
+  fd.append("translate_fallback", JSON.stringify(tlSlots));
   fd.append("output_format", $("output_format").value);
   fd.append("additional_context", additionalCtx);
   fd.append("group", groupVal);
@@ -1328,7 +2015,14 @@ $("job-form").addEventListener("submit", async e => {
   // source === "resume" with source_job_id: no file needed, backend handles it
   const btn = $("start-btn");
   btn.disabled = true; btn.textContent = "Memproses...";
-  const resp = await fetch("/api/jobs", { method:"POST", body:fd });
+  let resp;
+  try {
+    resp = await fetch("/api/jobs", { method:"POST", body:fd });
+  } catch (err) {
+    btn.disabled = false; btn.textContent = "Mulai Proses";
+    alert("Gagal menghubungi server: " + err);
+    return;
+  }
   btn.disabled = false; btn.textContent = "Mulai Proses";
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -1336,6 +2030,19 @@ $("job-form").addEventListener("submit", async e => {
     return;
   }
   jobId = (await resp.json()).job_id;
+  currentJobMode = currentMode;
+  currentJobParams = {
+    mode: currentMode,
+    translator: $("translator").value,
+    transcribe_model: $("transcribe_model").value,
+    translate_model: $("translate_model").value,
+    timing_model: timingModelVal,
+    qc_model: qcModelVal,
+    deep_audio_qc: deepAudioQcVal,
+    audio_fallback: audioSlots,
+    translate_fallback: tlSlots,
+    gemini_key_label: $("gemini-key-sel") ? $("gemini-key-sel").value : "Default",
+  };
   if (typeof clearContinuity === "function") clearContinuity();
   resetProgress();
   logLine("job", "start", "Job " + jobId + " dimulai...");
@@ -1343,11 +2050,112 @@ $("job-form").addEventListener("submit", async e => {
 });
 
 // ── Retry ────────────────────────────────────────────────────────
+$("retry-translator").addEventListener("change", () => {
+  if (!globalConfig || !globalConfig.models) return;
+  const prov = $("retry-translator").value || "gemini";
+  const models = (globalConfig.models.translation && globalConfig.models.translation[prov]) || [];
+  const def = (globalConfig.models.defaults && globalConfig.models.defaults.translation && globalConfig.models.defaults.translation[prov]) || "";
+  populateSelect($("retry-translate-model"), models, def);
+  const effectiveMode = currentJobMode || (currentJobParams && currentJobParams.mode) || currentMode || "full";
+  const isAudioQc = lastFailedStage === "qc" && effectiveMode !== "translation_only";
+  const hasKeys = Boolean(globalConfig.gemini_keys && globalConfig.gemini_keys.length > 0);
+  $("retry-key-wrap").classList.toggle("hidden", !(hasKeys && (isAudioQc || prov === "gemini")));
+});
+
 $("retry-btn").addEventListener("click", async () => {
-  const resp = await fetch("/api/jobs/" + jobId + "/retry", { method:"POST" });
-  if (!resp.ok) { alert("Gagal retry."); return; }
+  if (!jobId) return;
+  const isVisible = el => Boolean(el && !el.classList.contains("hidden"));
+  const payload = {};
+
+  if (isVisible($("retry-key-wrap")) && $("retry-gemini-key").value) {
+    payload.gemini_key_label = $("retry-gemini-key").value;
+  }
+  if (isVisible($("retry-transcribe-wrap")) && $("retry-transcribe-model").value) {
+    payload.transcribe_model = $("retry-transcribe-model").value;
+  }
+  if (isVisible($("retry-timing-wrap")) && $("retry-timing-model").value) {
+    payload.timing_model = $("retry-timing-model").value;
+  }
+  if (isVisible($("retry-translator-wrap")) && $("retry-translator").value) {
+    payload.translator = $("retry-translator").value;
+  }
+  if (isVisible($("retry-translate-wrap")) && $("retry-translate-model").value) {
+    payload.translate_model = $("retry-translate-model").value;
+  }
+  if (isVisible($("retry-qc-wrap"))) {
+    if ($("retry-qc-model").value) {
+      payload.qc_model = $("retry-qc-model").value;
+    }
+    payload.deep_audio_qc = Boolean($("retry-deep-audio-qc").checked);
+  }
+
+  const btn = $("retry-btn");
+  btn.disabled = true;
+  let resp;
+  try {
+    resp = await fetch("/api/jobs/" + jobId + "/retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    btn.disabled = false;
+    alert("Gagal menghubungi server: " + err);
+    return;
+  }
+  btn.disabled = false;
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(err.detail || "Gagal retry.");
+    return;
+  }
+
+  // Sync main form controls & currentJobParams with applied overrides
+  if (payload.gemini_key_label) {
+    if ($("gemini-key-sel")) $("gemini-key-sel").value = payload.gemini_key_label;
+    if (globalConfig) globalConfig.active_gemini_key = payload.gemini_key_label;
+  }
+  if (payload.transcribe_model && $("transcribe_model")) {
+    $("transcribe_model").value = payload.transcribe_model;
+  }
+  if (payload.timing_model && $("timing_model")) {
+    $("timing_model").value = payload.timing_model;
+  }
+  if (payload.translator && $("translator")) {
+    const prevProv = $("translator").value;
+    $("translator").value = payload.translator;
+    if (prevProv !== payload.translator && globalConfig && globalConfig.models) {
+      populateTranslateModelDropdown(globalConfig.models, payload.translator);
+    }
+  }
+  if (payload.translate_model && $("translate_model")) {
+    $("translate_model").value = payload.translate_model;
+  }
+  if (payload.qc_model && $("qc_model")) {
+    $("qc_model").value = payload.qc_model;
+  }
+  if (typeof payload.deep_audio_qc === "boolean" && $("deep_audio_qc")) {
+    $("deep_audio_qc").checked = payload.deep_audio_qc;
+  }
+  if (!currentJobParams) currentJobParams = {};
+  Object.assign(currentJobParams, payload);
+
+  const summaryParts = [];
+  if (payload.translator) summaryParts.push("provider: " + payload.translator);
+  if (payload.translate_model) summaryParts.push("terjemahan: " + payload.translate_model);
+  if (payload.transcribe_model) summaryParts.push("transkripsi: " + payload.transcribe_model);
+  if (payload.timing_model) summaryParts.push("timing: " + payload.timing_model);
+  if (payload.qc_model) summaryParts.push("qc: " + payload.qc_model);
+  if (typeof payload.deep_audio_qc === "boolean") summaryParts.push("deep_qc: " + payload.deep_audio_qc);
+  if (payload.gemini_key_label) summaryParts.push("key: " + payload.gemini_key_label);
+
+  hideRetryBox();
   resetProgress();
-  logLine("job", "start", "Job " + jobId + " diulang dari checkpoint...");
+  logLine(
+    "job",
+    "start",
+    "Job " + jobId + " diulang dari checkpoint" + (summaryParts.length ? " (" + summaryParts.join(", ") + ")" : "") + "..."
+  );
   listen(jobId);
 });
 
@@ -1435,17 +2243,39 @@ $("continue-btn").addEventListener("click", async () => {
   if (!sessionId) return;
   const btn = $("continue-btn");
   btn.disabled = true; btn.textContent = "Melanjutkan...";
-  const resp = await fetch("/api/jobs/" + sessionId + "/retry", { method: "POST" });
-  btn.disabled = false; btn.textContent = "↩ Lanjutkan dari Checkpoint";
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    alert(err.detail || "Gagal melanjutkan sesi.");
-    return;
+  try {
+    let preParams = null, preMode = null, preFailedStage = null;
+    try {
+      const infoResp = await fetch("/api/jobs/" + sessionId);
+      if (infoResp.ok) {
+        const info = await infoResp.json();
+        preParams = info.params || null;
+        preMode = (info.params && info.params.mode) || "full";
+        preFailedStage = info.failed_stage || null;
+        if (preParams && preFailedStage) {
+          preParams._failed_stage = preFailedStage;
+        }
+      }
+    } catch (_) {}
+
+    const resp = await fetch("/api/jobs/" + sessionId + "/retry", { method: "POST" });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(err.detail || "Gagal melanjutkan sesi.");
+      return;
+    }
+    jobId = sessionId;
+    currentJobParams = preParams;
+    currentJobMode = preMode;
+    resetProgress();
+    lastFailedStage = preFailedStage;
+    logLine("job", "start", "Melanjutkan sesi " + sessionId + " dari checkpoint...");
+    listen(sessionId);
+  } catch (err) {
+    alert("Gagal menghubungi server: " + err);
+  } finally {
+    btn.disabled = false; btn.textContent = "↩ Lanjutkan dari Checkpoint";
   }
-  jobId = sessionId;
-  resetProgress();
-  logLine("job", "start", "Melanjutkan sesi " + sessionId + " dari checkpoint...");
-  listen(sessionId);
 });
 
 // ── Context group + show selector ────────────────────────────────
@@ -1527,10 +2357,12 @@ $("ctx-toggle").addEventListener("click", () => {
 });
 
 $("gemini-key-sel").addEventListener("change", async () => {
+  const label = $("gemini-key-sel").value;
+  if (globalConfig) globalConfig.active_gemini_key = label;
   await fetch("/api/config/active-key", {
     method: "PUT",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({label: $("gemini-key-sel").value}),
+    body: JSON.stringify({label}),
   });
 });
 
