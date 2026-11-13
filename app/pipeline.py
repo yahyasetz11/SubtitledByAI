@@ -723,7 +723,7 @@ def _stage_translate(job: Job, cfg, tracker,
     system = translate.build_translate_system(context_md, members_md,
                                               additional_context=additional_context)
     translator = job.params.get("translator") or "gemini"
-    client = providers.make_translator(
+    client = providers.make_text_client(
         cfg, translator,
         model=job.params.get("translate_model") or None,
     )

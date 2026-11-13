@@ -1227,6 +1227,36 @@ def test_pipeline_inherits_audio_provider_and_transcribe_model(env, monkeypatch)
     assert qc_calls, "audio QC pass should have run"
 
 
+def test_translate_stage_uses_text_client_for_9router_and_openrouter(env, monkeypatch):
+    calls = []
+
+    def fake_make_text_client(cfg, provider, model=None, key_label=None):
+        calls.append({"provider": provider, "model": model})
+        return object()
+
+    monkeypatch.setattr("app.providers.make_text_client", fake_make_text_client)
+
+    for provider, model in (
+        ("9router", "ag/gemini-3.8-flash-high"),
+        ("openrouter", "deepseek/deepseek-chat"),
+    ):
+        calls.clear()
+        job = pipeline.create_job(make_params(
+            mode="translation_only", source="file", url=None,
+            translator=provider, translate_model=model,
+        ))
+        (job.dir / "transcript_jp.json").write_text(
+            json.dumps([FAKE_UTTS[0].to_dict()], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        pipeline.run_job(job.id)
+
+        assert job.status == "done", (provider, job.error)
+        assert any(
+            c["provider"] == provider and c["model"] == model for c in calls
+        ), provider
+
+
 def test_pipeline_inherits_translator_and_translate_model_for_text_qc(env, monkeypatch):
     text_calls = []
     runner_calls = []

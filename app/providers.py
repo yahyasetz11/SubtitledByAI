@@ -543,13 +543,22 @@ class NineRouterClient:
 class OpenRouterClient:
     def __init__(self, api_key: str, model: str, base_url: str = "https://openrouter.ai/api/v1"):
         from openai import OpenAI
-        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=0,
+            default_headers={
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "SubtitledByAI",
+            },
+        )
         self.model = model
 
     def upload_audio(self, path: Path):
         return path
 
     def generate(self, system: str, user: str, audio=None) -> LLMResponse:
+        kwargs = {}
         if audio is not None:
             audio_path = Path(audio)
             b64_audio = base64.b64encode(audio_path.read_bytes()).decode("ascii")
@@ -559,11 +568,13 @@ class OpenRouterClient:
             ]
         else:
             user_content = user
+            kwargs["response_format"] = {"type": "json_object"}
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user_content}],
             temperature=0.3,
+            **kwargs,
         )
         return _from_openai(resp)
 

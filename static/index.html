@@ -1129,6 +1129,10 @@ textarea:focus {
               <label for="retry-gemini-key">API Key:</label>
               <select id="retry-gemini-key" class="field-select"></select>
             </div>
+            <div class="retry-control-wrap hidden" id="retry-audio-provider-wrap">
+              <label for="retry-audio-provider">Audio Provider:</label>
+              <select id="retry-audio-provider" class="field-select"></select>
+            </div>
             <div class="retry-control-wrap hidden" id="retry-transcribe-wrap">
               <label for="retry-transcribe-model">Model Transkripsi:</label>
               <select id="retry-transcribe-model" class="field-select"></select>
@@ -1405,6 +1409,14 @@ async function showRetryBox(stage) {
     activeProv = availProviders[0].value;
   }
 
+  const audioProviderOptions = Object.entries((globalConfig && globalConfig.audio_providers) || {})
+    .filter(([, ok]) => Boolean(ok))
+    .map(([p]) => ({ value: p, label: PROVIDER_LABELS[p] || p }));
+  if (audioProviderOptions.length > 0) {
+    populateSelect($("retry-audio-provider"), audioProviderOptions, audioProvider);
+  }
+  const retryAudioProvider = ($("retry-audio-provider") && $("retry-audio-provider").value) || audioProvider;
+
   if (globalConfig) {
     if (hasKeys) {
       const defKey = params.gemini_key_label
@@ -1417,7 +1429,7 @@ async function showRetryBox(stage) {
       const rawAudio = (globalConfig.models && globalConfig.models.transcription) || [];
       let audioList = Array.isArray(rawAudio)
         ? rawAudio
-        : ((rawAudio && rawAudio[audioProvider]) || Object.values(rawAudio || {}).flat());
+        : ((rawAudio && rawAudio[retryAudioProvider]) || Object.values(rawAudio || {}).flat());
       const inheritedAudioModel = params.transcribe_model
         || ($("transcribe_model") && $("transcribe_model").value)
         || "";
@@ -1479,8 +1491,11 @@ async function showRetryBox(stage) {
   const showTranslator = isTranslate || isAudioQc;
   const showTranslate = isTranslate || isAudioQc;
   const showQc = isAudioQc;
+  const showAudioProvider = (showTranscribe || showTiming || showQc)
+    && audioProviderOptions.length > 1;
   const showKey = hasKeys && (isTranscribe || isTiming || isAudioQc || (isTranslate && activeProv === "gemini"));
 
+  $("retry-audio-provider-wrap").classList.toggle("hidden", !showAudioProvider);
   $("retry-key-wrap").classList.toggle("hidden", !showKey);
   $("retry-transcribe-wrap").classList.toggle("hidden", !showTranscribe);
   $("retry-timing-wrap").classList.toggle("hidden", !showTiming);
@@ -1683,7 +1698,7 @@ async function loadConfig() {
 
   // Populate Gemini key selector
   const ksel = $("gemini-key-sel");
-  populateSelect(ksel, cfg.gemini_keys || ["Default"], cfg.active_gemini_key || "Default");
+  populateSelect(ksel, (cfg.gemini_keys && cfg.gemini_keys.length) ? cfg.gemini_keys : ["Default"], cfg.active_gemini_key || "Default");
 
   // Populate 3-slot fallback chains
   buildFallbackRows(cfg);
@@ -2204,6 +2219,24 @@ $("job-form").addEventListener("submit", async e => {
 });
 
 // ── Retry ────────────────────────────────────────────────────────
+$("retry-audio-provider").addEventListener("change", () => {
+  if (!globalConfig || !globalConfig.models) return;
+  const prov = $("retry-audio-provider").value || "gemini";
+  const rawAudio = globalConfig.models.transcription;
+  const audioList = Array.isArray(rawAudio)
+    ? rawAudio
+    : ((rawAudio && rawAudio[prov]) || Object.values(rawAudio || {}).flat());
+  const def = defaultFromModelConfig(
+    globalConfig.models.defaults && globalConfig.models.defaults.transcription,
+    prov
+  );
+  const current = ($("retry-transcribe-model") && $("retry-transcribe-model").value) || "";
+  const selected = audioList.includes(current) ? current : def;
+  populateSelect($("retry-transcribe-model"), audioList, selected);
+  populateSelect($("retry-timing-model"), audioList, selected);
+  populateSelect($("retry-qc-model"), audioList, selected);
+});
+
 $("retry-translator").addEventListener("change", () => {
   if (!globalConfig || !globalConfig.models) return;
   const prov = $("retry-translator").value || "gemini";
@@ -2221,7 +2254,10 @@ $("retry-btn").addEventListener("click", async () => {
   const isVisible = el => Boolean(el && !el.classList.contains("hidden"));
   const payload = {};
 
-  const retryAudioProvider = (currentJobParams && currentJobParams.audio_provider)
+  const retryAudioProvider = (
+    isVisible($("retry-audio-provider-wrap")) && $("retry-audio-provider").value
+  )
+    || (currentJobParams && currentJobParams.audio_provider)
     || ($("audio_provider") && $("audio_provider").value)
     || "";
   if (retryAudioProvider) payload.audio_provider = retryAudioProvider;
