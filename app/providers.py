@@ -199,8 +199,10 @@ class Config:
         openrouter_api_key = (os.getenv("OPENROUTER_API_KEY") or "").strip() or None
         if not gemini_key and not ninerouter_api_key and not openrouter_api_key and not openai_key and not anthropic_key:
             raise ConfigError(
-                "GEMINI_API_KEY belum diisi. Salin .env.example menjadi .env "
-                "lalu isi GEMINI_API_KEY (wajib untuk transkripsi & translasi)."
+                "Tidak ada API key yang dikonfigurasi. "
+                "Isi setidaknya satu kunci API di .env: "
+                "GEMINI_API_KEY, NINEROUTER_API_KEY, OPENROUTER_API_KEY, "
+                "OPENAI_API_KEY, atau ANTHROPIC_API_KEY."
             )
         try:
             _models = load_models_config()

@@ -147,7 +147,7 @@ def test_config_missing_gemini_key_raises(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
+    with pytest.raises(ConfigError, match="Tidak ada API key"):
         Config.load()
 
 
