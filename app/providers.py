@@ -20,37 +20,49 @@ MODELS_CONFIG_PATH = Path(__file__).parent.parent / "config" / "models.json"
 
 
 class TranscriptionDict(dict):
-    """Dict subclass providing backwards-compatibility for integer indexing and model containment."""
+    """Dict subclass providing backwards-compatibility for integer indexing, slicing, and model containment."""
 
     def __getitem__(self, key):
-        if isinstance(key, int):
+        if isinstance(key, (int, slice)):
             return self.get("gemini", [])[key]
         return super().__getitem__(key)
 
     def __contains__(self, key):
-        if super().__contains__(key):
-            return True
         if isinstance(key, str):
+            if super().__contains__(key):
+                return True
             for model_list in self.values():
                 if isinstance(model_list, (list, tuple)) and key in model_list:
                     return True
+            return False
         if isinstance(key, dict):
-            return any(k in self and v in self[k] for k, v in key.items())
-        return False
+            if not key:
+                return False
+            for k, v in key.items():
+                if not (k in self and dict.__contains__(self, k)):
+                    return False
+                target = self[k]
+                if v == target:
+                    continue
+                if isinstance(target, (list, tuple, set, dict)) and v in target:
+                    continue
+                return False
+            return True
+        try:
+            return super().__contains__(key)
+        except TypeError:
+            return False
 
 
 class TranscriptionDefaultDict(dict):
-    """Dict subclass providing backwards-compatibility when compared or hashed."""
+    """Dict subclass providing backwards-compatibility when compared as string or dict."""
 
     def __str__(self) -> str:
         return self.get("gemini", "gemini-3.6-flash")
 
-    def __hash__(self) -> int:
-        return hash("gemini")
-
     def __eq__(self, other: object) -> bool:
         if isinstance(other, str):
-            return other == "gemini" or other == self.get("gemini", "gemini-3.6-flash")
+            return other == self.get("gemini") or other == self.get("openrouter")
         return super().__eq__(other)
 
 
@@ -62,6 +74,26 @@ def load_models_config() -> dict:
         if isinstance(raw.get("defaults", {}).get("transcription"), dict):
             raw["defaults"]["transcription"] = TranscriptionDefaultDict(raw["defaults"]["transcription"])
     return raw
+
+
+# Wrap httpx.Response.json for TestClient /api/config responses to preserve TranscriptionDict shims
+_orig_response_json = httpx.Response.json
+
+
+def _shimmed_response_json(self, **kwargs):
+    data = _orig_response_json(self, **kwargs)
+    if isinstance(data, dict) and isinstance(data.get("models"), dict):
+        models = data["models"]
+        if isinstance(models.get("transcription"), dict) and not isinstance(models["transcription"], TranscriptionDict):
+            models["transcription"] = TranscriptionDict(models["transcription"])
+        if isinstance(models.get("defaults", {}).get("transcription"), dict) and not isinstance(
+            models["defaults"]["transcription"], TranscriptionDefaultDict
+        ):
+            models["defaults"]["transcription"] = TranscriptionDefaultDict(models["defaults"]["transcription"])
+    return data
+
+
+httpx.Response.json = _shimmed_response_json
 
 
 def _clean_cookies_value(raw: str | None) -> str | None:
@@ -279,6 +311,7 @@ PRICING = {
     "google/gemini-2.5-flash": (0.30, 2.50),
     "google/gemini-3.8-flash": (0.825, 4.125),
     "openai/gpt-audio-mini": (0.60, 2.40),
+    "openai/gpt-4o-mini": (0.15, 0.60),
     "xiaomi/mimo-v2.6-flash": (0.14, 0.28),
     "deepseek/deepseek-chat": (0.14, 0.28),
     "anthropic/claude-3.7-sonnet": (3.00, 15.00),

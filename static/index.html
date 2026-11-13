@@ -1203,7 +1203,8 @@ const STAGE_LABELS = {
 function populateSelect(sel, items, selectedVal) {
   if (!sel) return;
   sel.innerHTML = "";
-  for (const item of (items || [])) {
+  const list = Array.isArray(items) ? items : [];
+  for (const item of list) {
     const opt = document.createElement("option");
     if (typeof item === "object" && item !== null) {
       opt.value = item.value;
@@ -1233,7 +1234,10 @@ function buildFallbackRows(cfg) {
   const activeKey = ($("gemini-key-sel") && $("gemini-key-sel").value)
     || (cfg && cfg.active_gemini_key)
     || keys[0];
-  const audioModels = (cfg && cfg.models && cfg.models.transcription) || [];
+  const rawAudio = cfg && cfg.models && cfg.models.transcription;
+  const audioModels = Array.isArray(rawAudio)
+    ? rawAudio
+    : (rawAudio ? (rawAudio.gemini || Object.values(rawAudio).flat()) : []);
   const availProviders = Object.entries((cfg && cfg.providers) || {})
     .filter(([, ok]) => Boolean(ok))
     .map(([p]) => ({ value: p, label: PROVIDER_LABELS[p] || p }));
@@ -1565,11 +1569,16 @@ async function loadConfig() {
 
   // Populate model dropdowns
   if (cfg.models) {
-    const audioModels = cfg.models.transcription || [];
+    const audioModels = Array.isArray(cfg.models.transcription)
+      ? cfg.models.transcription
+      : ((cfg.models.transcription && cfg.models.transcription.gemini) || Object.values(cfg.models.transcription || {}).flat());
     const defs = cfg.models.defaults || {};
-    populateSelect($("transcribe_model"), audioModels, defs.transcription || "");
-    populateSelect($("timing_model"), audioModels, defs.timing || defs.transcription || "");
-    populateSelect($("qc_model"), audioModels, defs.qc || defs.transcription || "");
+    const defaultTrans = typeof defs.transcription === "object" && defs.transcription !== null
+      ? (defs.transcription.gemini || Object.values(defs.transcription)[0] || "")
+      : (defs.transcription || "");
+    populateSelect($("transcribe_model"), audioModels, defaultTrans);
+    populateSelect($("timing_model"), audioModels, defs.timing || defaultTrans);
+    populateSelect($("qc_model"), audioModels, defs.qc || defaultTrans);
 
     // Translation model variants for current provider
     populateTranslateModelDropdown(cfg.models, sel.value);

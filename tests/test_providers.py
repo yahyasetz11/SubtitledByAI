@@ -1046,7 +1046,98 @@ def test_models_config_phase2_structure():
 
 
 def test_pricing_includes_new_gemini_and_qwen_models():
-    from app.providers import PRICING
+    from app.providers import PRICING, load_models_config
     assert "gemini-3.8-flash" in PRICING
     assert "qwen/qwen3.8-omni-flash" in PRICING
+
+    models_cfg = load_models_config()
+    for section in ("transcription", "translation"):
+        for provider, model_list in models_cfg.get(section, {}).items():
+            if provider == "9router":
+                continue
+            for model in model_list:
+                assert model in PRICING, f"Model '{model}' from {section}.{provider} missing from PRICING"
+
+
+def test_transcription_dict_indexing_slicing_and_containment():
+    from app.providers import TranscriptionDict
+
+    td = TranscriptionDict({
+        "gemini": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash"],
+        "openrouter": ["qwen/qwen3.8-omni-flash", "openai/gpt-audio-mini"],
+    })
+
+    # Integer indexing (backwards compatibility defaults to gemini list)
+    assert td[0] == "gemini-3.8-flash"
+    assert td[1] == "gemini-3.6-flash"
+    assert td[-1] == "gemini-2.5-flash"
+
+    # Slicing support
+    assert td[:2] == ["gemini-3.8-flash", "gemini-3.6-flash"]
+    assert td[1:] == ["gemini-3.6-flash", "gemini-2.5-flash"]
+
+    # String containment: provider keys
+    assert "gemini" in td
+    assert "openrouter" in td
+
+    # String containment: model names across providers
+    assert "gemini-3.6-flash" in td
+    assert "qwen/qwen3.8-omni-flash" in td
+    assert "openai/gpt-audio-mini" in td
+    assert "nonexistent-model" not in td
+
+    # Dict containment (unhashable types should not crash with TypeError)
+    assert {"gemini": "gemini-3.6-flash"} in td
+    assert {"openrouter": "qwen/qwen3.8-omni-flash"} in td
+    assert {
+        "gemini": "gemini-3.6-flash",
+        "openrouter": "qwen/qwen3.8-omni-flash",
+    } in td
+
+    # Dict containment: exact match with sublist
+    assert {"gemini": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash"]} in td
+
+    # Dict containment negative cases
+    assert {"gemini": "unknown-model"} not in td
+    assert {"unknown_provider": "gemini-3.6-flash"} not in td
+    assert {
+        "gemini": "gemini-3.6-flash",
+        "openrouter": "unknown-model",
+    } not in td
+    assert {} not in td
+
+
+def test_transcription_default_dict_equality_and_str():
+    from app.providers import TranscriptionDefaultDict
+
+    tdd = TranscriptionDefaultDict({
+        "gemini": "gemini-3.6-flash",
+        "openrouter": "qwen/qwen3.8-omni-flash",
+    })
+
+    # String equality matches gemini or openrouter default
+    assert tdd == "gemini-3.6-flash"
+    assert tdd == "qwen/qwen3.8-omni-flash"
+    assert "gemini-3.6-flash" == tdd
+    assert "qwen/qwen3.8-omni-flash" == tdd
+
+    # Misleading __eq__ == "gemini" is removed
+    assert tdd != "gemini"
+    assert "gemini" != tdd
+    assert tdd != "unknown-model"
+
+    # Dict equality
+    assert tdd == {
+        "gemini": "gemini-3.6-flash",
+        "openrouter": "qwen/qwen3.8-omni-flash",
+    }
+    assert tdd != {"gemini": "different-model"}
+
+    # __str__ returns gemini default
+    assert str(tdd) == "gemini-3.6-flash"
+
+    # Unhashable: __hash__ removed
+    with pytest.raises(TypeError):
+        hash(tdd)
+
 
