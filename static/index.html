@@ -1352,20 +1352,23 @@ async function showRetryBox(stage) {
       populateSelect($("retry-gemini-key"), globalConfig.gemini_keys, defKey);
     }
     if (globalConfig.models) {
-      const audioModels = globalConfig.models.transcription || [];
+      const rawAudio = (globalConfig.models && globalConfig.models.transcription) || [];
+      const audioList = Array.isArray(rawAudio)
+        ? rawAudio
+        : ((rawAudio && rawAudio.gemini) || Object.values(rawAudio || {}).flat());
       populateSelect(
         $("retry-transcribe-model"),
-        audioModels,
+        audioList,
         params.transcribe_model || ($("transcribe_model") && $("transcribe_model").value) || ""
       );
       populateSelect(
         $("retry-timing-model"),
-        audioModels,
+        audioList,
         params.timing_model || ($("timing_model") && $("timing_model").value) || ""
       );
       populateSelect(
         $("retry-qc-model"),
-        audioModels,
+        audioList,
         params.qc_model || ($("qc_model") && $("qc_model").value) || ""
       );
       populateSelect($("retry-translator"), availProviders, activeProv);
