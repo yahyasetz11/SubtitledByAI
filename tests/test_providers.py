@@ -18,8 +18,13 @@ def test_config_loads_keys_and_defaults(monkeypatch):
     cfg = Config.load()
     models = load_models_config()
 
+    default_trans = (
+        models["defaults"]["transcription"].get("gemini", "gemini-3.6-flash")
+        if isinstance(models["defaults"]["transcription"], dict)
+        else models["defaults"]["transcription"]
+    )
     assert cfg.gemini_api_key == "g-key"
-    assert cfg.transcribe_model == models["defaults"]["transcription"]
+    assert cfg.transcribe_model == default_trans
     assert cfg.translate_models == {
         "gemini": models["defaults"]["translation"]["gemini"],
         "openai": models["defaults"]["translation"]["openai"],
@@ -76,8 +81,17 @@ def test_config_blank_model_env_falls_back_to_models_json(monkeypatch):
     cfg = Config.load()
     models = load_models_config()
 
-    assert cfg.transcribe_model == models["defaults"]["transcription"]
-    assert cfg.translate_models == models["defaults"]["translation"]
+    default_trans = (
+        models["defaults"]["transcription"].get("gemini", "gemini-3.6-flash")
+        if isinstance(models["defaults"]["transcription"], dict)
+        else models["defaults"]["transcription"]
+    )
+    assert cfg.transcribe_model == default_trans
+    assert cfg.translate_models == {
+        "gemini": models["defaults"]["translation"]["gemini"],
+        "openai": models["defaults"]["translation"]["openai"],
+        "anthropic": models["defaults"]["translation"]["anthropic"],
+    }
     assert cfg.timing_model == models["defaults"]["timing"]
     assert cfg.qc_model == models["defaults"]["qc"]
 
@@ -387,18 +401,22 @@ def test_load_models_config_returns_expected_keys():
 def test_models_config_transcription_list_nonempty():
     from app.providers import load_models_config
     cfg = load_models_config()
-    assert len(cfg["transcription"]) > 0
+    assert len(cfg["transcription"]["gemini"]) > 0
+    assert len(cfg["transcription"]["openrouter"]) > 0
 
 
 def test_models_config_defaults_match_lists():
     from app.providers import load_models_config
     cfg = load_models_config()
-    assert cfg["defaults"]["transcription"] in cfg["transcription"]
+    assert cfg["defaults"]["transcription"]["gemini"] in cfg["transcription"]["gemini"]
+    assert cfg["defaults"]["transcription"]["openrouter"] in cfg["transcription"]["openrouter"]
     assert cfg["defaults"]["translation"]["gemini"] in cfg["translation"]["gemini"]
     assert cfg["defaults"]["translation"]["openai"] in cfg["translation"]["openai"]
     assert cfg["defaults"]["translation"]["anthropic"] in cfg["translation"]["anthropic"]
-    assert cfg["defaults"]["timing"] in cfg["transcription"]
-    assert cfg["defaults"]["qc"] in cfg["transcription"]
+    assert cfg["defaults"]["translation"]["9router"] in cfg["translation"]["9router"]
+    assert cfg["defaults"]["translation"]["openrouter"] in cfg["translation"]["openrouter"]
+    assert cfg["defaults"]["timing"] in cfg["transcription"]["gemini"]
+    assert cfg["defaults"]["qc"] in cfg["transcription"]["gemini"]
 
 
 def test_models_config_path_exists():
@@ -1005,3 +1023,30 @@ def test_execute_audio_with_fallback_raises_when_upload_returns_none(tmp_path):
     assert upload_done == 0
     assert generate_calls == 0
     assert built == ["m0"]
+
+
+def test_models_config_phase2_structure():
+    from app.providers import load_models_config
+    cfg = load_models_config()
+    assert isinstance(cfg["transcription"], dict)
+    assert "gemini" in cfg["transcription"]
+    assert "openrouter" in cfg["transcription"]
+    assert "qwen/qwen3.8-omni-flash" in cfg["transcription"]["openrouter"]
+
+    assert isinstance(cfg["translation"], dict)
+    assert "9router" in cfg["translation"]
+    assert "openrouter" in cfg["translation"]
+    assert "ag/gemini-3.8-flash-high" in cfg["translation"]["9router"]
+
+    assert cfg["defaults"]["audio_provider"] == "gemini"
+    assert cfg["defaults"]["text_provider"] == "9router"
+    assert cfg["defaults"]["transcription"]["gemini"] in cfg["transcription"]["gemini"]
+    assert cfg["defaults"]["transcription"]["openrouter"] in cfg["transcription"]["openrouter"]
+    assert cfg["defaults"]["translation"]["9router"] in cfg["translation"]["9router"]
+
+
+def test_pricing_includes_new_gemini_and_qwen_models():
+    from app.providers import PRICING
+    assert "gemini-3.8-flash" in PRICING
+    assert "qwen/qwen3.8-omni-flash" in PRICING
+

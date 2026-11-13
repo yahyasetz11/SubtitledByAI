@@ -188,7 +188,11 @@ def _validate_audio_fallback(raw_slots: list[dict], models_cfg: dict) -> list[di
     if len(raw_slots) > 3:
         raise HTTPException(422, "audio_fallback maksimal 3 slot.")
     keys = providers.get_all_gemini_keys()
-    valid_models = set(models_cfg["transcription"])
+    trans_models = models_cfg["transcription"]
+    if isinstance(trans_models, dict):
+        valid_models = set(m for sub in trans_models.values() for m in sub)
+    else:
+        valid_models = set(trans_models)
     cleaned: list[dict] = []
     for slot in raw_slots:
         if not isinstance(slot, dict):
@@ -283,21 +287,34 @@ async def create_job(background_tasks: BackgroundTasks,
 
     translator = translator.strip()
     models_cfg = providers.load_models_config()
+    trans_models = models_cfg["transcription"]
+    if isinstance(trans_models, dict):
+        valid_audio_models = set(m for sub in trans_models.values() for m in sub)
+    else:
+        valid_audio_models = set(trans_models)
+
+    defaults = models_cfg.get("defaults", {})
+    default_trans_cfg = defaults.get("transcription", "gemini-3.6-flash")
+    default_trans = (
+        default_trans_cfg.get("gemini", "gemini-3.6-flash")
+        if isinstance(default_trans_cfg, dict)
+        else default_trans_cfg
+    )
 
     if mode != "translation_only":
-        resolved_transcribe_model = transcribe_model.strip() or models_cfg["defaults"]["transcription"]
-        if resolved_transcribe_model not in models_cfg["transcription"]:
+        resolved_transcribe_model = transcribe_model.strip() or default_trans
+        if resolved_transcribe_model not in valid_audio_models:
             raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
     else:
         resolved_transcribe_model = ""
 
     if mode == "full":
-        resolved_timing_model = timing_model.strip() or models_cfg["defaults"]["timing"]
-        if resolved_timing_model not in models_cfg["transcription"]:
+        resolved_timing_model = timing_model.strip() or defaults.get("timing", "gemini-3.6-flash")
+        if resolved_timing_model not in valid_audio_models:
             raise HTTPException(422, f"timing_model tidak dikenal: {resolved_timing_model!r}")
 
-        resolved_qc_model = qc_model.strip() or models_cfg["defaults"]["qc"]
-        if resolved_qc_model not in models_cfg["transcription"]:
+        resolved_qc_model = qc_model.strip() or defaults.get("qc", "gemini-3.6-flash")
+        if resolved_qc_model not in valid_audio_models:
             raise HTTPException(422, f"qc_model tidak dikenal: {resolved_qc_model!r}")
     else:
         resolved_timing_model = ""
@@ -488,11 +505,17 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
         if not key_label:
             raise HTTPException(500, str(exc)) from exc
         defaults = models_cfg["defaults"]
+        default_trans_cfg = defaults.get("transcription", "gemini-3.6-flash")
+        default_trans = (
+            default_trans_cfg.get("gemini", "gemini-3.6-flash")
+            if isinstance(default_trans_cfg, dict)
+            else default_trans_cfg
+        )
         cfg = providers.Config(
             gemini_api_key=resolved_key,
             openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip() or None,
             anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip() or None,
-            transcribe_model=defaults["transcription"],
+            transcribe_model=default_trans,
             translate_models=dict(defaults["translation"]),
             ytdlp_cookies_file=None,
             sub_min_duration=0.7,
@@ -534,7 +557,11 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
             if updated_params.get("translate_model") not in valid_translate_models:
                 updated_params["translate_model"] = models_cfg["defaults"]["translation"][current_translator]
 
-        valid_audio_models = models_cfg["transcription"]
+        trans_models = models_cfg["transcription"]
+        if isinstance(trans_models, dict):
+            valid_audio_models = set(m for sub in trans_models.values() for m in sub)
+        else:
+            valid_audio_models = set(trans_models)
         for field_name, raw_val in (
             ("transcribe_model", req.transcribe_model),
             ("timing_model", req.timing_model),

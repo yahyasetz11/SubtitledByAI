@@ -19,8 +19,49 @@ class ConfigError(Exception):
 MODELS_CONFIG_PATH = Path(__file__).parent.parent / "config" / "models.json"
 
 
+class TranscriptionDict(dict):
+    """Dict subclass providing backwards-compatibility for integer indexing and model containment."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.get("gemini", [])[key]
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        if super().__contains__(key):
+            return True
+        if isinstance(key, str):
+            for model_list in self.values():
+                if isinstance(model_list, (list, tuple)) and key in model_list:
+                    return True
+        if isinstance(key, dict):
+            return any(k in self and v in self[k] for k, v in key.items())
+        return False
+
+
+class TranscriptionDefaultDict(dict):
+    """Dict subclass providing backwards-compatibility when compared or hashed."""
+
+    def __str__(self) -> str:
+        return self.get("gemini", "gemini-3.6-flash")
+
+    def __hash__(self) -> int:
+        return hash("gemini")
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return other == "gemini" or other == self.get("gemini", "gemini-3.6-flash")
+        return super().__eq__(other)
+
+
 def load_models_config() -> dict:
-    return json.loads(MODELS_CONFIG_PATH.read_text(encoding="utf-8"))
+    raw = json.loads(MODELS_CONFIG_PATH.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        if isinstance(raw.get("transcription"), dict):
+            raw["transcription"] = TranscriptionDict(raw["transcription"])
+        if isinstance(raw.get("defaults", {}).get("transcription"), dict):
+            raw["defaults"]["transcription"] = TranscriptionDefaultDict(raw["defaults"]["transcription"])
+    return raw
 
 
 def _clean_cookies_value(raw: str | None) -> str | None:
@@ -124,7 +165,11 @@ class Config:
             _models = load_models_config()
             _defaults = _models["defaults"]
             _trans_defaults = _defaults["translation"]
-            default_transcribe = _defaults["transcription"]
+            default_transcribe = (
+                _defaults["transcription"].get("gemini", "gemini-3.6-flash")
+                if isinstance(_defaults["transcription"], dict)
+                else _defaults["transcription"]
+            )
             default_translate = {
                 "gemini": _trans_defaults["gemini"],
                 "openai": _trans_defaults["openai"],
@@ -216,6 +261,8 @@ def call_with_retries(fn, *, attempts: int = 4, base_delay: float = 2.0,
 # USD per 1M tokens: (input, output). Update when prices change.
 PRICING = {
     # Gemini 3.x (preview/lite — use 2.5-flash pricing as estimate until official pricing published)
+    "gemini-3.8-flash": (0.825, 4.125),
+    "gemini-3.5-live-translate-preview": (0.30, 2.50),
     "gemini-3.1-pro-preview": (3.50, 10.50),
     "gemini-3.7-flash": (1.50, 7.50),
     "gemini-3.6-flash": (1.50, 7.50),
@@ -226,6 +273,16 @@ PRICING = {
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
+    # OpenRouter / Other models
+    "qwen/qwen3.8-omni-flash": (0.15, 0.47),
+    "google/gemini-2.5-flash-lite": (0.10, 0.40),
+    "google/gemini-2.5-flash": (0.30, 2.50),
+    "google/gemini-3.8-flash": (0.825, 4.125),
+    "openai/gpt-audio-mini": (0.60, 2.40),
+    "xiaomi/mimo-v2.6-flash": (0.14, 0.28),
+    "deepseek/deepseek-chat": (0.14, 0.28),
+    "anthropic/claude-3.7-sonnet": (3.00, 15.00),
+    "qwen/qwen-2.5-72b-instruct": (0.35, 0.40),
     # OpenAI
     "gpt-4.1": (2.00, 8.00),
     "gpt-4.1-mini": (0.40, 1.60),

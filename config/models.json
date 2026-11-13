@@ -1,36 +1,57 @@
 {
-  "transcription": [
-    "gemini-3.8-flash",
-    "gemini-3.5-live-translate-preview",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.1-pro-preview",
-    "gemini-3.5-flash",
-    "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-pro"
-  ],
-  "translation": {
+  "transcription": {
     "gemini": [
       "gemini-3.8-flash",
       "gemini-3.7-flash",
       "gemini-3.6-flash",
       "gemini-3.5-flash",
       "gemini-3.1-pro-preview",
-      "gemini-3-flash-preview",
-      "gemini-3.1-flash-lite",
       "gemini-2.5-flash",
-      "gemini-2.5-flash-lite",
       "gemini-2.5-pro"
+    ],
+    "openrouter": [
+      "qwen/qwen3.8-omni-flash",
+      "google/gemini-2.5-flash-lite",
+      "google/gemini-2.5-flash",
+      "google/gemini-3.8-flash",
+      "openai/gpt-audio-mini",
+      "xiaomi/mimo-v2.6-flash"
+    ]
+  },
+  "translation": {
+    "9router": [
+      "ag/gemini-3.8-flash-high",
+      "subtitle-gen-combo",
+      "gc/gemini-2.5-flash",
+      "gc/gemini-3-flash-preview"
+    ],
+    "openrouter": [
+      "deepseek/deepseek-chat",
+      "anthropic/claude-3.7-sonnet",
+      "google/gemini-2.5-flash",
+      "openai/gpt-4o-mini",
+      "qwen/qwen-2.5-72b-instruct"
+    ],
+    "gemini": [
+      "gemini-3.8-flash",
+      "gemini-3.7-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-2.5-flash"
     ],
     "openai": ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
     "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
   },
   "defaults": {
-    "transcription": "gemini-3.6-flash",
+    "audio_provider": "gemini",
+    "transcription": {
+      "gemini": "gemini-3.6-flash",
+      "openrouter": "qwen/qwen3.8-omni-flash"
+    },
+    "text_provider": "9router",
     "translation": {
+      "9router": "ag/gemini-3.8-flash-high",
+      "openrouter": "deepseek/deepseek-chat",
       "gemini": "gemini-3.6-flash",
       "openai": "gpt-4o",
       "anthropic": "claude-sonnet-4-6"
