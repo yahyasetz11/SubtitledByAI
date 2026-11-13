@@ -311,6 +311,7 @@ def _make_audio_runner(
     primary_model: str,
     primary_client=None,
     *,
+    primary_provider: str = "gemini",
     active_key_label: str | None = None,
 ):
     client_model = getattr(primary_client, "model", None)
@@ -331,6 +332,7 @@ def _make_audio_runner(
     primary_slot = providers.AudioFallbackSlot(
         key_label=primary_label,
         model=primary_model,
+        provider=primary_provider,
     )
     fallback_slots = _parse_audio_fallback(job.params)
 
@@ -342,9 +344,14 @@ def _make_audio_runner(
         ):
             return primary_client
         key_label = None if slot == primary_slot else slot.key_label
-        return providers.make_audio_client(cfg, model=slot.model, key_label=key_label)
+        provider = getattr(slot, "provider", None) or primary_provider
+        return providers.make_audio_client(
+            cfg, provider=provider, model=slot.model, key_label=key_label
+        )
 
     def _resolve_key(slot: providers.AudioFallbackSlot) -> str:
+        if slot.provider != "gemini":
+            return f"{slot.provider}:{slot.key_label or ''}"
         if slot == primary_slot and cfg.gemini_api_key:
             return cfg.gemini_api_key
         return providers.resolve_gemini_key(slot.key_label, fallback_key=cfg.gemini_api_key)
@@ -559,9 +566,13 @@ def _stage_transcribe(job: Job, cfg, tracker,
     system, user = transcribe.build_transcribe_prompts(context_md, members_md,
                                                        additional_context=additional_context)
     primary_model = job.params.get("transcribe_model") or cfg.transcribe_model
-    gemini = providers.make_transcriber(cfg, model=primary_model)
+    audio_provider = job.params.get("audio_provider") or "gemini"
+    gemini = providers.make_audio_client(
+        cfg, provider=audio_provider, model=primary_model
+    )
     audio_runner = _make_audio_runner(
         job, cfg, "transcribe", primary_model, primary_client=gemini,
+        primary_provider=audio_provider,
         active_key_label=active_key_label,
     )
     n = len(chunks)
@@ -768,13 +779,21 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
     _invalidate_downstream(job, clear_qc=True)
 
     n = len(chunks)
-    timing_model = job.params.get("timing_model") or cfg.timing_model
+    audio_provider = job.params.get("audio_provider") or "gemini"
+    timing_model = (
+        job.params.get("timing_model")
+        or job.params.get("transcribe_model")
+        or cfg.timing_model
+    )
     _emit(job, "timing", "start",
           f"koreksi timing {len(rows)} ujaran via {timing_model} ({n} chunk)")
 
-    gemini = providers.make_audio_client(cfg, model=timing_model)
+    gemini = providers.make_audio_client(
+        cfg, provider=audio_provider, model=timing_model
+    )
     runner4 = _make_audio_runner(
         job, cfg, "timing", timing_model, primary_client=gemini,
+        primary_provider=audio_provider,
         active_key_label=active_key_label,
     )
     utterances = [transcribe.Utterance.from_dict(r) for r in rows]
@@ -860,7 +879,12 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
         return result
 
     deep_audio_qc = bool(job.params.get("deep_audio_qc", False))
-    qc_model = job.params.get("qc_model") or cfg.qc_model
+    audio_provider = job.params.get("audio_provider") or "gemini"
+    qc_model = (
+        job.params.get("qc_model")
+        or job.params.get("transcribe_model")
+        or cfg.qc_model
+    )
     mode_label = (
         "deep" if (deep_audio_qc and audio_path is not None)
         else ("hybrid" if audio_path is not None else "text-only")
@@ -911,9 +935,12 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
     audio_client = None
     audio_runner_3 = None
     if audio_path is not None:
-        audio_client = providers.make_audio_client(cfg, model=qc_model)
+        audio_client = providers.make_audio_client(
+            cfg, provider=audio_provider, model=qc_model
+        )
         runner4 = _make_audio_runner(
             job, cfg, "qc", qc_model, primary_client=audio_client,
+            primary_provider=audio_provider,
             active_key_label=active_key_label,
         )
 

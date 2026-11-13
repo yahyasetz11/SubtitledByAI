@@ -443,7 +443,7 @@ def test_pipeline_wires_audio_and_translate_fallbacks_end_to_end(env, monkeypatc
     )
     monkeypatch.setattr(
         "app.providers.make_audio_client",
-        lambda cfg, model=None, key_label=None: FakeAudioClient(
+        lambda cfg, provider="gemini", model=None, key_label=None: FakeAudioClient(
             providers.resolve_gemini_key(key_label, fallback_key=cfg.gemini_api_key),
             model or cfg.transcribe_model,
         ),
@@ -534,7 +534,7 @@ def test_pipeline_passes_timing_and_qc_models_and_deep_flag(env, monkeypatch):
     timing_calls = []
     qc_calls = []
 
-    def spy_make_audio_client(cfg, model=None, key_label=None):
+    def spy_make_audio_client(cfg, provider="gemini", model=None, key_label=None):
         audio_client_calls.append({"model": model, "key_label": key_label})
         return object()
 
@@ -683,7 +683,7 @@ def test_primary_client_object_not_reused_as_audio_or_text_client(env, monkeypat
 
     monkeypatch.setattr(
         "app.providers.make_audio_client",
-        lambda cfg, model=None, key_label=None: (built_audio.append(model), RealFakeAudio())[1],
+        lambda cfg, provider="gemini", model=None, key_label=None: (built_audio.append(model), RealFakeAudio())[1],
     )
     monkeypatch.setattr(
         "app.providers.make_text_client",
@@ -1054,7 +1054,7 @@ def test_timing_and_qc_runners_step_through_fallbacks_and_clear_failed_stage_on_
     )
     monkeypatch.setattr(
         "app.providers.make_audio_client",
-        lambda cfg, model=None, key_label=None: FakeAudioClient(
+        lambda cfg, provider="gemini", model=None, key_label=None: FakeAudioClient(
             providers.resolve_gemini_key(key_label, fallback_key=cfg.gemini_api_key),
             model or cfg.transcribe_model,
         ),
@@ -1181,5 +1181,76 @@ def test_pipeline_handles_none_translator_active_key_race_model_defaults_and_qc_
         assert model_t == "gemini-3.5-flash"
     finally:
         providers.set_active_gemini_key("Default")
+
+
+def test_pipeline_inherits_audio_provider_and_transcribe_model(env, monkeypatch):
+    timing_calls = []
+    qc_calls = []
+
+    def fake_make_audio_client(cfg, provider="gemini", model=None, key_label=None):
+        timing_calls.append({"provider": provider, "model": model})
+        return object()
+
+    def fake_qc(audio_client, rows, audio_path, tmp_dir, system, tracker, **kw):
+        qc_calls.append({"deep": kw.get("deep_audio_qc")})
+        return rows, {"mode": "hybrid", "summary": {}, "issues": []}
+
+    monkeypatch.setattr("app.providers.make_audio_client", fake_make_audio_client)
+    monkeypatch.setattr("app.qc.run_qc_all", fake_qc)
+
+    params = make_params(
+        audio_provider="openrouter",
+        transcribe_model="qwen/qwen3.8-omni-flash",
+        timing_model="",
+        qc_model="",
+    )
+    job = pipeline.create_job(params)
+    pipeline.run_job(job.id)
+
+    assert job.status == "done"
+    # Timing should have inherited openrouter and qwen3.8-omni-flash
+    assert any(c["provider"] == "openrouter" and c["model"] == "qwen/qwen3.8-omni-flash" for c in timing_calls)
+
+
+def test_pipeline_inherits_translator_and_translate_model_for_text_qc(env, monkeypatch):
+    text_calls = []
+    runner_calls = []
+
+    class FakeTextClient:
+        def __init__(self, provider: str, model: str):
+            self.provider = provider
+            self.model = model
+
+        def generate(self, system: str, user: str, audio=None):
+            return LLMResponse(text="[]", input_tokens=1, output_tokens=1)
+
+    def fake_make_text_client(cfg, provider, model=None, key_label=None):
+        text_calls.append({"provider": provider, "model": model})
+        return FakeTextClient(provider, model)
+
+    def fake_qc(gemini, rows, audio_path, tmp_dir, system, tracker, **kw):
+        runner_calls.append(kw["text_runner"]("sys", "usr"))
+        return rows, {"mode": "text_only", "summary": {}, "issues": []}
+
+    monkeypatch.setattr("app.providers.make_text_client", fake_make_text_client)
+    monkeypatch.setattr("app.qc.run_qc_all", fake_qc)
+
+    job = pipeline.create_job(make_params(
+        mode="translation_only", source="file", url=None,
+        translator="openrouter",
+        translate_model="deepseek/deepseek-chat",
+    ))
+    (job.dir / "transcript_jp.json").write_text(
+        json.dumps([FAKE_UTTS[0].to_dict()], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    pipeline.run_job(job.id)
+
+    assert job.status == "done"
+    assert any(
+        c["provider"] == "openrouter" and c["model"] == "deepseek/deepseek-chat"
+        for c in text_calls
+    )
+    assert runner_calls and runner_calls[0][1] == "deepseek/deepseek-chat"
 
 
