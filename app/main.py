@@ -404,7 +404,6 @@ async def create_job(background_tasks: BackgroundTasks,
             422, f"API key untuk audio provider {audio_provider!r} belum diisi di .env.")
     if (
         mode != "transcription_only"
-        and translator != "9router"
         and not cfg.available_providers().get(translator)
     ):
         raise HTTPException(
@@ -590,6 +589,7 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
     if req:
         avail = cfg.available_providers()
         prev_translator = updated_params.get("translator") or "gemini"
+        prev_audio_provider = updated_params.get("audio_provider") or "gemini"
         audio_provider_val = (req.audio_provider or "").strip()
         if audio_provider_val:
             if audio_provider_val not in ("gemini", "openrouter"):
@@ -616,7 +616,7 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
         valid_translate_models = models_cfg["translation"].get(current_translator, [])
         translate_model_val = (req.translate_model or "").strip()
         if translate_model_val:
-            if translate_model_val not in valid_translate_models:
+            if current_translator not in ("openrouter", "9router") and translate_model_val not in valid_translate_models:
                 raise HTTPException(
                     422,
                     f"translate_model tidak dikenal untuk provider {current_translator!r}: {translate_model_val!r}",
@@ -631,8 +631,20 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
             valid_audio_models = set(m for sub in trans_models.values() for m in sub)
         else:
             valid_audio_models = set(trans_models)
+
+        current_audio_provider = updated_params.get("audio_provider") or "gemini"
+        transcribe_model_val = (req.transcribe_model or "").strip()
+        if transcribe_model_val:
+            if current_audio_provider == "openrouter":
+                updated_params["transcribe_model"] = transcribe_model_val
+            elif transcribe_model_val not in models_cfg["transcription"]["gemini"]:
+                raise HTTPException(422, f"transcribe_model tidak dikenal: {transcribe_model_val!r}")
+            else:
+                updated_params["transcribe_model"] = transcribe_model_val
+        elif audio_provider_val and audio_provider_val != prev_audio_provider:
+            updated_params["transcribe_model"] = models_cfg["defaults"]["transcription"][current_audio_provider]
+
         for field_name, raw_val in (
-            ("transcribe_model", req.transcribe_model),
             ("timing_model", req.timing_model),
             ("qc_model", req.qc_model),
         ):

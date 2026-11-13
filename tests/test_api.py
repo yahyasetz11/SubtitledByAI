@@ -937,6 +937,7 @@ def test_get_config_discovers_live_9router_models(client, monkeypatch):
 
 def test_create_job_accepts_audio_provider_and_openrouter_custom_model(client, fake_run, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    monkeypatch.setenv("NINEROUTER_API_KEY", "test-9r-key")
     resp = client.post(
         "/api/jobs",
         data={
@@ -954,3 +955,33 @@ def test_create_job_accepts_audio_provider_and_openrouter_custom_model(client, f
     assert job.params["audio_provider"] == "openrouter"
     assert job.params["transcribe_model"] == "custom/my-audio-model"
     assert job.params["translator"] == "9router"
+
+
+def test_get_config_exposes_audio_providers(client, monkeypatch):
+    monkeypatch.setattr("app.audio.ensure_ffmpeg", lambda: True)
+    body = client.get("/api/config").json()
+    assert isinstance(body["audio_providers"], dict)
+    assert isinstance(body["audio_providers"]["gemini"], bool)
+    assert isinstance(body["audio_providers"]["openrouter"], bool)
+
+
+def test_create_job_rejects_invalid_audio_provider(client):
+    resp = post_url_job(client, audio_provider="bogus")
+    assert resp.status_code == 422
+
+
+def test_create_job_rejects_missing_audio_provider_key(client, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    resp = post_url_job(client, audio_provider="openrouter")
+    assert resp.status_code == 422
+
+
+def test_retry_accepts_custom_openrouter_translate_model(client, fake_run, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    job_id = post_url_job(client, translator="openrouter").json()["job_id"]
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"translate_model": "custom/some-model"},
+    )
+    assert resp.status_code == 200
+    assert pipeline.JOBS[job_id].params["translate_model"] == "custom/some-model"
