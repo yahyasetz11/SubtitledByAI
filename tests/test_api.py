@@ -514,12 +514,11 @@ def test_create_job_validates_and_stores_qc_timing_and_fallbacks(client, fake_ru
 
 
 def test_create_job_defaults_timing_qc_deep_and_fallbacks(client, fake_run):
-    models_cfg = load_models_config()
     resp = post_url_job(client)
     assert resp.status_code == 200
     job = pipeline.JOBS[resp.json()["job_id"]]
-    assert job.params["timing_model"] == models_cfg["defaults"]["timing"]
-    assert job.params["qc_model"] == models_cfg["defaults"]["qc"]
+    assert job.params["timing_model"] == ""
+    assert job.params["qc_model"] == ""
     assert job.params["deep_audio_qc"] is False
     assert job.params["audio_fallback"] == []
     assert job.params["translate_fallback"] == []
@@ -1006,3 +1005,44 @@ def test_create_job_rejects_9router_without_key(client, monkeypatch):
     monkeypatch.delenv("NINEROUTER_API_KEY", raising=False)
     resp = post_url_job(client, translator="9router", mode="full")
     assert resp.status_code == 422
+
+
+def test_create_job_blank_timing_qc_models_left_empty_for_inheritance(
+    client, fake_run, monkeypatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    resp = post_url_job(
+        client,
+        audio_provider="openrouter",
+        transcribe_model="qwen/qwen3.8-omni-flash",
+        timing_model="",
+        qc_model="",
+    )
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["timing_model"] == ""
+    assert job.params["qc_model"] == ""
+
+
+def test_retry_audio_provider_switch_clears_timing_qc_models(
+    client, fake_run, monkeypatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    models_cfg = load_models_config()
+    gemini_models = models_cfg["transcription"]["gemini"]
+    job_id = post_url_job(
+        client,
+        audio_provider="gemini",
+        timing_model=gemini_models[0],
+        qc_model=gemini_models[-1],
+    ).json()["job_id"]
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"audio_provider": "openrouter"},
+    )
+    assert resp.status_code == 200
+    job = pipeline.JOBS[job_id]
+    assert job.params["audio_provider"] == "openrouter"
+    assert job.params["timing_model"] == ""
+    assert job.params["qc_model"] == ""

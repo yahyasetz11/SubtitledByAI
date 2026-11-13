@@ -1184,11 +1184,17 @@ def test_pipeline_handles_none_translator_active_key_race_model_defaults_and_qc_
 
 
 def test_pipeline_inherits_audio_provider_and_transcribe_model(env, monkeypatch):
+    import inspect
+
     timing_calls = []
     qc_calls = []
 
     def fake_make_audio_client(cfg, provider="gemini", model=None, key_label=None):
-        timing_calls.append({"provider": provider, "model": model})
+        timing_calls.append({
+            "caller": inspect.stack()[1].function,
+            "provider": provider,
+            "model": model,
+        })
         return object()
 
     def fake_qc(audio_client, rows, audio_path, tmp_dir, system, tracker, **kw):
@@ -1208,8 +1214,17 @@ def test_pipeline_inherits_audio_provider_and_transcribe_model(env, monkeypatch)
     pipeline.run_job(job.id)
 
     assert job.status == "done"
-    # Timing should have inherited openrouter and qwen3.8-omni-flash
-    assert any(c["provider"] == "openrouter" and c["model"] == "qwen/qwen3.8-omni-flash" for c in timing_calls)
+
+    def _inherited(call):
+        return (
+            call["provider"] == "openrouter"
+            and call["model"] == "qwen/qwen3.8-omni-flash"
+        )
+
+    assert any(c["caller"] == "_stage_transcribe" and _inherited(c) for c in timing_calls)
+    assert any(c["caller"] == "_stage_timing" and _inherited(c) for c in timing_calls)
+    assert any(c["caller"] == "_stage_qc" and _inherited(c) for c in timing_calls)
+    assert qc_calls, "audio QC pass should have run"
 
 
 def test_pipeline_inherits_translator_and_translate_model_for_text_qc(env, monkeypatch):

@@ -201,6 +201,20 @@ def _opt_str(slot: dict, field: str, prefix: str) -> str:
     return (raw or "").strip()
 
 
+def _validate_audio_model_override(
+    model: str, provider: str, models_cfg: dict, field_name: str
+) -> str:
+    """Validate an explicit timing/qc model override against the audio provider."""
+    value = (model or "").strip()
+    if not value:
+        return ""
+    if provider == "openrouter":
+        return value
+    if value not in models_cfg["transcription"]["gemini"]:
+        raise HTTPException(422, f"{field_name} tidak dikenal: {value!r}")
+    return value
+
+
 def _validate_audio_fallback(raw_slots: list[dict], models_cfg: dict) -> list[dict]:
     if not isinstance(raw_slots, list):
         raise HTTPException(422, "audio_fallback harus berupa list.")
@@ -311,11 +325,6 @@ async def create_job(background_tasks: BackgroundTasks,
         raise HTTPException(422, f"audio_provider tidak dikenal: {audio_provider!r}")
 
     models_cfg = providers.load_models_config()
-    trans_models = models_cfg["transcription"]
-    if isinstance(trans_models, dict):
-        valid_audio_models = set(m for sub in trans_models.values() for m in sub)
-    else:
-        valid_audio_models = set(trans_models)
 
     defaults = models_cfg.get("defaults", {})
     default_trans_cfg = defaults.get("transcription", "gemini-3.6-flash")
@@ -344,13 +353,12 @@ async def create_job(background_tasks: BackgroundTasks,
         resolved_transcribe_model = ""
 
     if mode == "full":
-        resolved_timing_model = timing_model.strip() or defaults.get("timing", "gemini-3.6-flash")
-        if resolved_timing_model not in valid_audio_models:
-            raise HTTPException(422, f"timing_model tidak dikenal: {resolved_timing_model!r}")
-
-        resolved_qc_model = qc_model.strip() or defaults.get("qc", "gemini-3.6-flash")
-        if resolved_qc_model not in valid_audio_models:
-            raise HTTPException(422, f"qc_model tidak dikenal: {resolved_qc_model!r}")
+        resolved_timing_model = _validate_audio_model_override(
+            timing_model, audio_provider, models_cfg, "timing_model"
+        )
+        resolved_qc_model = _validate_audio_model_override(
+            qc_model, audio_provider, models_cfg, "qc_model"
+        )
     else:
         resolved_timing_model = ""
         resolved_qc_model = ""
@@ -626,12 +634,6 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
             if updated_params.get("translate_model") not in valid_translate_models:
                 updated_params["translate_model"] = models_cfg["defaults"]["translation"][current_translator]
 
-        trans_models = models_cfg["transcription"]
-        if isinstance(trans_models, dict):
-            valid_audio_models = set(m for sub in trans_models.values() for m in sub)
-        else:
-            valid_audio_models = set(trans_models)
-
         current_audio_provider = updated_params.get("audio_provider") or "gemini"
         transcribe_model_val = (req.transcribe_model or "").strip()
         if transcribe_model_val:
@@ -644,15 +646,20 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
         elif audio_provider_val and audio_provider_val != prev_audio_provider:
             updated_params["transcribe_model"] = models_cfg["defaults"]["transcription"][current_audio_provider]
 
+        audio_provider_changed = bool(
+            audio_provider_val and audio_provider_val != prev_audio_provider
+        )
         for field_name, raw_val in (
             ("timing_model", req.timing_model),
             ("qc_model", req.qc_model),
         ):
-            model_val = (raw_val or "").strip()
+            model_val = _validate_audio_model_override(
+                raw_val or "", current_audio_provider, models_cfg, field_name
+            )
             if model_val:
-                if model_val not in valid_audio_models:
-                    raise HTTPException(422, f"{field_name} tidak dikenal: {model_val!r}")
                 updated_params[field_name] = model_val
+            elif audio_provider_changed:
+                updated_params[field_name] = ""
 
         if req.deep_audio_qc is not None:
             updated_params["deep_audio_qc"] = req.deep_audio_qc
