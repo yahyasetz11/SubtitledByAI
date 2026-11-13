@@ -985,3 +985,24 @@ def test_retry_accepts_custom_openrouter_translate_model(client, fake_run, monke
     )
     assert resp.status_code == 200
     assert pipeline.JOBS[job_id].params["translate_model"] == "custom/some-model"
+
+
+def test_retry_audio_provider_switch_resets_transcribe_model(client, fake_run, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    models_cfg = load_models_config()
+    job_id = post_url_job(client, audio_provider="gemini").json()["job_id"]
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"audio_provider": "openrouter"},
+    )
+    assert resp.status_code == 200
+    job = pipeline.JOBS[job_id]
+    assert job.params["audio_provider"] == "openrouter"
+    assert job.params["transcribe_model"] == models_cfg["defaults"]["transcription"]["openrouter"]
+
+
+def test_create_job_rejects_9router_without_key(client, monkeypatch):
+    monkeypatch.delenv("NINEROUTER_API_KEY", raising=False)
+    resp = post_url_job(client, translator="9router", mode="full")
+    assert resp.status_code == 422
