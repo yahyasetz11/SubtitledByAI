@@ -1415,36 +1415,46 @@ async function showRetryBox(stage) {
     }
     if (globalConfig.models) {
       const rawAudio = (globalConfig.models && globalConfig.models.transcription) || [];
-      const audioList = Array.isArray(rawAudio)
+      let audioList = Array.isArray(rawAudio)
         ? rawAudio
         : ((rawAudio && rawAudio[audioProvider]) || Object.values(rawAudio || {}).flat());
+      const inheritedAudioModel = params.transcribe_model
+        || ($("transcribe_model") && $("transcribe_model").value)
+        || "";
+      if (inheritedAudioModel && !audioList.includes(inheritedAudioModel)) {
+        audioList = [inheritedAudioModel, ...audioList];
+      }
       populateSelect(
         $("retry-transcribe-model"),
         audioList,
-        params.transcribe_model || ($("transcribe_model") && $("transcribe_model").value) || ""
+        inheritedAudioModel
       );
       populateSelect(
         $("retry-timing-model"),
         audioList,
-        params.timing_model || ""
+        params.timing_model || inheritedAudioModel
       );
       populateSelect(
         $("retry-qc-model"),
         audioList,
-        params.qc_model || ""
+        params.qc_model || inheritedAudioModel
       );
       populateSelect($("retry-translator"), availProviders, activeProv);
       const chosenProv = ($("retry-translator") && $("retry-translator").value) || activeProv;
-      const tlModels = (globalConfig.models.translation && globalConfig.models.translation[chosenProv]) || [];
+      let tlModels = (globalConfig.models.translation && globalConfig.models.translation[chosenProv]) || [];
       const tlDef = (globalConfig.models.defaults && globalConfig.models.defaults.translation && globalConfig.models.defaults.translation[chosenProv]) || "";
       const formProv = $("translator") && $("translator").value;
       const fallbackTlModel = chosenProv === formProv
         ? (($("translate_model") && $("translate_model").value) || tlDef)
         : tlDef;
+      const retryTlModel = params.translate_model || fallbackTlModel;
+      if (retryTlModel && !tlModels.includes(retryTlModel)) {
+        tlModels = [retryTlModel, ...tlModels];
+      }
       populateSelect(
         $("retry-translate-model"),
         tlModels,
-        params.translate_model || fallbackTlModel
+        retryTlModel
       );
       activeProv = chosenProv;
     }
@@ -2268,21 +2278,15 @@ $("retry-btn").addEventListener("click", async () => {
     if (payload.transcribe_model && $("transcribe_model")) {
       $("transcribe_model").value = payload.transcribe_model;
     }
-    if (payload.timing_model && $("timing_model")) {
-      $("timing_model").value = payload.timing_model;
-    }
     if (payload.translator && $("translator")) {
       const prevProv = $("translator").value;
       $("translator").value = payload.translator;
       if (prevProv !== payload.translator && globalConfig && globalConfig.models) {
-        populateTranslateModelDropdown(globalConfig.models, payload.translator);
+        populateTranslateModelDropdown(payload.translator);
       }
     }
     if (payload.translate_model && $("translate_model")) {
       $("translate_model").value = payload.translate_model;
-    }
-    if (payload.qc_model && $("qc_model")) {
-      $("qc_model").value = payload.qc_model;
     }
     if (typeof payload.deep_audio_qc === "boolean" && $("deep_audio_qc")) {
       $("deep_audio_qc").checked = payload.deep_audio_qc;
