@@ -911,3 +911,46 @@ def test_retry_rejects_non_string_fallback_field_and_over_three_slots(client, fa
     assert resp.status_code == 422
     assert pipeline.JOBS[job_id].params == orig_params
     assert fake_run == [job_id]
+
+# ---------------------------------------------------------------------------
+# Phase 2: live 9router discovery + audio provider / custom OpenRouter models
+# ---------------------------------------------------------------------------
+
+
+def test_get_config_discovers_live_9router_models(client, monkeypatch):
+    monkeypatch.setenv("NINEROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("NINEROUTER_BASE_URL", "http://localhost:20128/v1")
+
+    def fake_get(url, **kw):
+        class Resp:
+            status_code = 200
+            def json(self):
+                return {"data": [{"id": "model-1"}, {"id": "model-2"}]}
+        return Resp()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    body = client.get("/api/config").json()
+    assert "9router" in body["providers"]
+    assert "model-1" in body["models"]["translation"]["9router"]
+    assert "model-2" in body["models"]["translation"]["9router"]
+
+
+def test_create_job_accepts_audio_provider_and_openrouter_custom_model(client, fake_run, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    resp = client.post(
+        "/api/jobs",
+        data={
+            "source": "url",
+            "url": "https://youtu.be/x",
+            "audio_provider": "openrouter",
+            "transcribe_model": "custom/my-audio-model",
+            "translator": "9router",
+            "translate_model": "ag/gemini-3.8-flash-high",
+            "output_format": "both",
+        },
+    )
+    assert resp.status_code == 200
+    job = pipeline.JOBS[resp.json()["job_id"]]
+    assert job.params["audio_provider"] == "openrouter"
+    assert job.params["transcribe_model"] == "custom/my-audio-model"
+    assert job.params["translator"] == "9router"

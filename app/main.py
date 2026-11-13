@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -128,21 +129,39 @@ def list_sessions(include_done: bool = Query(False)) -> dict:
     return {"sessions": sessions}
 
 
+def fetch_9router_models(base_url: str, api_key: str | None = None) -> list[str]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        resp = httpx.get(f"{base_url.rstrip('/')}/models", headers=headers, timeout=2.0)
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            return [m["id"] for m in data if isinstance(m, dict) and "id" in m]
+    except Exception:
+        pass
+    return []
+
+
 @app.get("/api/config")
 def get_config() -> dict:
     try:
         cfg = providers.Config.load()
     except providers.ConfigError as exc:
         return {"ok": False, "error": str(exc)}
+    models_cfg = providers.load_models_config()
+    if cfg.ninerouter_api_key and cfg.ninerouter_base_url:
+        live_models = fetch_9router_models(cfg.ninerouter_base_url, cfg.ninerouter_api_key)
+        if live_models:
+            models_cfg["translation"]["9router"] = live_models
     return {
         "ok": True,
         "providers": cfg.available_providers(),
+        "audio_providers": cfg.available_audio_providers(),
         "translate_models": cfg.translate_models,
         "transcribe_model": cfg.transcribe_model,
         "ffmpeg": audio.ensure_ffmpeg(),
         "gemini_keys": list(providers.get_all_gemini_keys().keys()),
         "active_gemini_key": providers.get_active_gemini_label(),
-        "models": providers.load_models_config(),
+        "models": models_cfg,
     }
 
 
@@ -255,6 +274,7 @@ async def create_job(background_tasks: BackgroundTasks,
                      source: str = Form(...),
                      url: str = Form(""),
                      translator: str = Form("gemini"),
+                     audio_provider: str = Form("gemini"),
                      output_format: str = Form("both"),
                      save_mp4: bool = Form(False),
                      group: str = Form("sakurazaka"),
@@ -286,6 +306,10 @@ async def create_job(background_tasks: BackgroundTasks,
         raise HTTPException(422, f"output_format tidak dikenal: {output_format!r}")
 
     translator = translator.strip()
+    audio_provider = audio_provider.strip()
+    if audio_provider not in ("gemini", "openrouter"):
+        raise HTTPException(422, f"audio_provider tidak dikenal: {audio_provider!r}")
+
     models_cfg = providers.load_models_config()
     trans_models = models_cfg["transcription"]
     if isinstance(trans_models, dict):
@@ -300,11 +324,22 @@ async def create_job(background_tasks: BackgroundTasks,
         if isinstance(default_trans_cfg, dict)
         else default_trans_cfg
     )
+    default_trans_openrouter = (
+        default_trans_cfg.get("openrouter", default_trans)
+        if isinstance(default_trans_cfg, dict)
+        else default_trans
+    )
 
     if mode != "translation_only":
-        resolved_transcribe_model = transcribe_model.strip() or default_trans
-        if resolved_transcribe_model not in valid_audio_models:
-            raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
+        if audio_provider == "openrouter":
+            resolved_transcribe_model = transcribe_model.strip() or default_trans_openrouter
+            if not resolved_transcribe_model:
+                raise HTTPException(
+                    422, "transcribe_model wajib diisi untuk audio provider 'openrouter'.")
+        else:
+            resolved_transcribe_model = transcribe_model.strip() or default_trans
+            if resolved_transcribe_model not in models_cfg["transcription"]["gemini"]:
+                raise HTTPException(422, f"transcribe_model tidak dikenal: {resolved_transcribe_model!r}")
     else:
         resolved_transcribe_model = ""
 
@@ -325,9 +360,14 @@ async def create_job(background_tasks: BackgroundTasks,
         if not translate_model.strip() and translator not in translation_defaults:
             raise HTTPException(422, f"translator tidak dikenal: {translator!r}")
         resolved_translate_model = translate_model.strip() or translation_defaults[translator]
-        provider_model_list = models_cfg["translation"].get(translator, [])
-        if resolved_translate_model not in provider_model_list:
-            raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
+        if translator in ("openrouter", "9router"):
+            if not resolved_translate_model:
+                raise HTTPException(
+                    422, f"translate_model wajib diisi untuk provider {translator!r}.")
+        else:
+            provider_model_list = models_cfg["translation"].get(translator, [])
+            if resolved_translate_model not in provider_model_list:
+                raise HTTPException(422, f"translate_model tidak dikenal untuk provider {translator!r}: {resolved_translate_model!r}")
     else:
         resolved_translate_model = ""
 
@@ -359,7 +399,14 @@ async def create_job(background_tasks: BackgroundTasks,
         cfg = providers.Config.load()
     except providers.ConfigError as exc:
         raise HTTPException(500, str(exc)) from exc
-    if not cfg.available_providers().get(translator):
+    if mode != "translation_only" and not cfg.available_audio_providers().get(audio_provider):
+        raise HTTPException(
+            422, f"API key untuk audio provider {audio_provider!r} belum diisi di .env.")
+    if (
+        mode != "transcription_only"
+        and translator != "9router"
+        and not cfg.available_providers().get(translator)
+    ):
         raise HTTPException(
             422, f"API key untuk provider {translator!r} belum diisi di .env.")
 
@@ -373,6 +420,7 @@ async def create_job(background_tasks: BackgroundTasks,
         "source": source,
         "url": url.strip() or None,
         "translator": translator,
+        "audio_provider": audio_provider,
         "output_format": output_format,
         "save_mp4": save_mp4,
         "original_filename": upload_name,
@@ -452,6 +500,7 @@ class RetryRequest(BaseModel):
     qc_model: str | None = None
     translate_model: str | None = None
     translator: str | None = None
+    audio_provider: str | None = None
     gemini_key_label: str | None = None
     deep_audio_qc: bool | None = None
     audio_fallback: list[dict] | None = None
@@ -541,6 +590,18 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
     if req:
         avail = cfg.available_providers()
         prev_translator = updated_params.get("translator") or "gemini"
+        audio_provider_val = (req.audio_provider or "").strip()
+        if audio_provider_val:
+            if audio_provider_val not in ("gemini", "openrouter"):
+                raise HTTPException(
+                    422, f"audio_provider tidak dikenal: {audio_provider_val!r}")
+            if not cfg.available_audio_providers().get(audio_provider_val):
+                raise HTTPException(
+                    422,
+                    f"API key untuk audio provider {audio_provider_val!r} belum diisi di .env.",
+                )
+            updated_params["audio_provider"] = audio_provider_val
+
         translator_val = (req.translator or "").strip()
         if translator_val:
             if translator_val not in models_cfg["translation"]:
