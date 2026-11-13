@@ -938,41 +938,42 @@ textarea:focus {
         </div>
       </div>
 
-      <div class="field-row">
-        <div class="field mode-full mode-trans">
+      <!-- Audio Stage -->
+      <div class="field-row mode-full mode-trans">
+        <div class="field">
+          <label class="field-label" for="audio_provider">Audio Provider</label>
+          <select id="audio_provider">
+            <option value="gemini">Google Gemini</option>
+            <option value="openrouter">OpenRouter (Multimodal)</option>
+          </select>
+        </div>
+        <div class="field">
           <label class="field-label" for="transcribe_model">Model transkripsi</label>
           <select id="transcribe_model"></select>
+          <input type="text" id="custom_transcribe_model" class="hidden" style="margin-top:6px;" placeholder="Ketik model OpenRouter (contoh: qwen/qwen3.8-omni-flash)">
         </div>
-        <div class="field mode-full mode-tl">
+      </div>
+
+      <!-- Text Stage -->
+      <div class="field-row mode-full mode-tl">
+        <div class="field">
           <label class="field-label" for="translator">Model translasi</label>
           <select id="translator"></select>
         </div>
-      </div>
-
-      <div class="field-row">
-        <div class="field mode-full mode-tl">
+        <div class="field">
           <label class="field-label" for="translate_model">Varian model terjemahan</label>
           <select id="translate_model"></select>
-        </div>
-        <div class="field mode-full mode-trans mode-tl">
-          <label class="field-label" for="output_format">Format output</label>
-          <select id="output_format">
-            <option value="both">.ass + .srt</option>
-            <option value="ass">.ass saja</option>
-            <option value="srt">.srt saja</option>
-          </select>
+          <input type="text" id="custom_translate_model" class="hidden" style="margin-top:6px;" placeholder="Ketik model OpenRouter (contoh: deepseek/deepseek-chat)">
         </div>
       </div>
 
-      <div class="field-row mode-full">
-        <div class="field">
-          <label class="field-label" for="timing_model">Model Timing</label>
-          <select id="timing_model"></select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="qc_model">Model Audio QC</label>
-          <select id="qc_model"></select>
-        </div>
+      <div class="field mode-full mode-trans mode-tl">
+        <label class="field-label" for="output_format">Format output</label>
+        <select id="output_format">
+          <option value="both">.ass + .srt</option>
+          <option value="ass">.ass saja</option>
+          <option value="srt">.srt saja</option>
+        </select>
       </div>
 
       <div class="field mode-full">
@@ -1186,7 +1187,8 @@ let lastQcReport = null;
 let currentJobParams = null;
 let currentJobMode = null;
 
-const PROVIDER_LABELS = { gemini:"Gemini", openai:"OpenAI", anthropic:"Anthropic Claude" };
+const PROVIDER_LABELS = { gemini:"Gemini", openai:"OpenAI", anthropic:"Anthropic Claude", "9router":"9Router", openrouter:"OpenRouter" };
+const CUSTOM_MODEL_SENTINEL = "__custom_model__";
 const STAGE_LABELS = {
   download: "Download",
   normalize: "Normalize",
@@ -1220,11 +1222,70 @@ function populateSelect(sel, items, selectedVal) {
   }
 }
 
-function populateTranslateModelDropdown(modelsConfig, provider) {
+function syncCustomModelInput(selectId, inputId) {
+  const sel = $(selectId);
+  const inp = $(inputId);
+  if (!sel || !inp) return;
+  const show = sel.value === CUSTOM_MODEL_SENTINEL;
+  inp.classList.toggle("hidden", !show);
+  if (show) inp.focus();
+}
+
+function resolveModelSelection(selectId, inputId) {
+  const sel = $(selectId);
+  if (!sel) return "";
+  if (sel.value !== CUSTOM_MODEL_SENTINEL) return sel.value;
+  const inp = $(inputId);
+  return inp ? inp.value.trim() : "";
+}
+
+function listFromModelConfig(raw, provider) {
+  if (Array.isArray(raw)) return raw.slice();
+  if (!raw || typeof raw !== "object") return [];
+  return Array.isArray(raw[provider]) ? raw[provider].slice() : [];
+}
+
+function defaultFromModelConfig(defaults, provider) {
+  if (!defaults) return "";
+  if (typeof defaults === "object" && !Array.isArray(defaults)) {
+    return defaults[provider] || "";
+  }
+  return typeof defaults === "string" ? defaults : "";
+}
+
+function populateTranscribeModelDropdown(provider) {
+  if (!globalConfig || !globalConfig.models) return;
+  const sel = $("transcribe_model");
+  if (!sel) return;
+  const raw = globalConfig.models.transcription;
+  const models = Array.isArray(raw)
+    ? raw.slice()
+    : ((raw && raw[provider]) || Object.values(raw || {}).flat());
+  const def = defaultFromModelConfig(globalConfig.models.defaults && globalConfig.models.defaults.transcription, provider);
+  const prev = sel.value;
+  const items = models.map(m => ({ value: m, label: m }));
+  if (def && !models.includes(def)) items.push({ value: def, label: def });
+  if (provider === "openrouter") {
+    items.push({ value: CUSTOM_MODEL_SENTINEL, label: "[Ketik model lain...]" });
+  }
+  populateSelect(sel, items, models.includes(prev) ? prev : def);
+  syncCustomModelInput("transcribe_model", "custom_transcribe_model");
+}
+
+function populateTranslateModelDropdown(provider) {
+  if (!globalConfig || !globalConfig.models) return;
   const sel = $("translate_model");
-  const models = (modelsConfig.translation && modelsConfig.translation[provider]) || [];
-  const def = modelsConfig.defaults && modelsConfig.defaults.translation && modelsConfig.defaults.translation[provider];
-  populateSelect(sel, models, def || "");
+  if (!sel) return;
+  const models = listFromModelConfig(globalConfig.models.translation, provider);
+  const def = defaultFromModelConfig(globalConfig.models.defaults && globalConfig.models.defaults.translation, provider);
+  const prev = sel.value;
+  const items = models.map(m => ({ value: m, label: m }));
+  if (def && !models.includes(def)) items.push({ value: def, label: def });
+  if (provider === "9router" || provider === "openrouter") {
+    items.push({ value: CUSTOM_MODEL_SENTINEL, label: "[Ketik model lain...]" });
+  }
+  populateSelect(sel, items, models.includes(prev) ? prev : def);
+  syncCustomModelInput("translate_model", "custom_translate_model");
 }
 
 function buildFallbackRows(cfg) {
@@ -1326,6 +1387,7 @@ async function showRetryBox(stage) {
   const params = currentJobParams || {};
   const effectiveStage = stage || lastFailedStage || params._failed_stage || "translate";
   const effectiveMode = currentJobMode || params.mode || currentMode || "full";
+  const audioProvider = params.audio_provider || ($("audio_provider") && $("audio_provider").value) || "gemini";
   lastFailedStage = effectiveStage;
 
   const stageLbl = $("retry-stage-label");
@@ -1355,7 +1417,7 @@ async function showRetryBox(stage) {
       const rawAudio = (globalConfig.models && globalConfig.models.transcription) || [];
       const audioList = Array.isArray(rawAudio)
         ? rawAudio
-        : ((rawAudio && rawAudio.gemini) || Object.values(rawAudio || {}).flat());
+        : ((rawAudio && rawAudio[audioProvider]) || Object.values(rawAudio || {}).flat());
       populateSelect(
         $("retry-transcribe-model"),
         audioList,
@@ -1364,12 +1426,12 @@ async function showRetryBox(stage) {
       populateSelect(
         $("retry-timing-model"),
         audioList,
-        params.timing_model || ($("timing_model") && $("timing_model").value) || ""
+        params.timing_model || ""
       );
       populateSelect(
         $("retry-qc-model"),
         audioList,
-        params.qc_model || ($("qc_model") && $("qc_model").value) || ""
+        params.qc_model || ""
       );
       populateSelect($("retry-translator"), availProviders, activeProv);
       const chosenProv = ($("retry-translator") && $("retry-translator").value) || activeProv;
@@ -1570,25 +1632,42 @@ async function loadConfig() {
     sel.appendChild(opt);
   }
 
+  // Populate audio provider dropdown (only enabled providers)
+  const audioProvSel = $("audio_provider");
+  if (audioProvSel) {
+    const audioCfg = cfg.audio_providers || {};
+    const enabledAudio = ["gemini", "openrouter"].filter(p => Boolean(audioCfg[p]));
+    if (enabledAudio.length === 0) enabledAudio.push("gemini");
+    const audioLabels = { gemini: "Google Gemini", openrouter: "OpenRouter (Multimodal)" };
+    const preferredAudio = enabledAudio.includes("gemini") ? "gemini" : enabledAudio[0];
+    populateSelect(
+      audioProvSel,
+      enabledAudio.map(p => ({ value: p, label: audioLabels[p] || p })),
+      preferredAudio
+    );
+    if (!audioProvSel.dataset.bound) {
+      audioProvSel.addEventListener("change", () => populateTranscribeModelDropdown(audioProvSel.value));
+      audioProvSel.dataset.bound = "1";
+    }
+  }
+
   // Populate model dropdowns
   if (cfg.models) {
-    const audioModels = Array.isArray(cfg.models.transcription)
-      ? cfg.models.transcription
-      : ((cfg.models.transcription && cfg.models.transcription.gemini) || Object.values(cfg.models.transcription || {}).flat());
-    const defs = cfg.models.defaults || {};
-    const defaultTrans = typeof defs.transcription === "object" && defs.transcription !== null
-      ? (defs.transcription.gemini || Object.values(defs.transcription)[0] || "")
-      : (defs.transcription || "");
-    populateSelect($("transcribe_model"), audioModels, defaultTrans);
-    populateSelect($("timing_model"), audioModels, defs.timing || defaultTrans);
-    populateSelect($("qc_model"), audioModels, defs.qc || defaultTrans);
-
-    // Translation model variants for current provider
-    populateTranslateModelDropdown(cfg.models, sel.value);
+    populateTranscribeModelDropdown(audioProvSel ? audioProvSel.value : "gemini");
+    populateTranslateModelDropdown(sel.value);
     // Keep translation model dropdown in sync when provider changes
     if (!sel.dataset.bound) {
-      sel.addEventListener("change", () => populateTranslateModelDropdown(cfg.models, sel.value));
+      sel.addEventListener("change", () => populateTranslateModelDropdown(sel.value));
       sel.dataset.bound = "1";
+    }
+    // Toggle custom model text inputs when the sentinel option is selected
+    if (!$("transcribe_model").dataset.bound) {
+      $("transcribe_model").addEventListener("change", () => syncCustomModelInput("transcribe_model", "custom_transcribe_model"));
+      $("transcribe_model").dataset.bound = "1";
+    }
+    if (!$("translate_model").dataset.bound) {
+      $("translate_model").addEventListener("change", () => syncCustomModelInput("translate_model", "custom_translate_model"));
+      $("translate_model").dataset.bound = "1";
     }
   }
 
@@ -2024,9 +2103,22 @@ $("job-form").addEventListener("submit", async e => {
     }
   }
 
-  const timingModelVal = currentMode === "full" && $("timing_model") ? $("timing_model").value : "";
-  const qcModelVal = currentMode === "full" && $("qc_model") ? $("qc_model").value : "";
+  const audioProviderVal = $("audio_provider") ? $("audio_provider").value : "gemini";
+  const transcribeModelVal = resolveModelSelection("transcribe_model", "custom_transcribe_model");
+  const translateModelVal = resolveModelSelection("translate_model", "custom_translate_model");
+  const translatorVal = $("translator").value;
   const deepAudioQcVal = currentMode === "full" && $("deep_audio_qc") ? $("deep_audio_qc").checked : false;
+
+  if ($("transcribe_model").value === CUSTOM_MODEL_SENTINEL && !transcribeModelVal) {
+    $("custom_transcribe_model").focus();
+    alert("Ketik nama model transkripsi terlebih dahulu.");
+    return;
+  }
+  if ($("translate_model").value === CUSTOM_MODEL_SENTINEL && !translateModelVal) {
+    $("custom_translate_model").focus();
+    alert("Ketik nama model terjemahan terlebih dahulu.");
+    return;
+  }
 
   const fd = new FormData();
   fd.append("mode", currentMode);
@@ -2035,11 +2127,10 @@ $("job-form").addEventListener("submit", async e => {
   if (sourceJobId) {
       fd.append("source_job_id", sourceJobId);
   }
-  fd.append("translator", $("translator").value);
-  fd.append("transcribe_model", $("transcribe_model").value);
-  fd.append("translate_model", $("translate_model").value);
-  fd.append("timing_model", timingModelVal);
-  fd.append("qc_model", qcModelVal);
+  fd.append("translator", translatorVal);
+  fd.append("audio_provider", audioProviderVal);
+  fd.append("transcribe_model", transcribeModelVal);
+  fd.append("translate_model", translateModelVal);
   fd.append("deep_audio_qc", deepAudioQcVal ? "true" : "false");
   fd.append("audio_fallback", JSON.stringify(audioSlots));
   fd.append("translate_fallback", JSON.stringify(tlSlots));
@@ -2087,11 +2178,10 @@ $("job-form").addEventListener("submit", async e => {
   currentJobMode = currentMode;
   currentJobParams = {
     mode: currentMode,
-    translator: $("translator").value,
-    transcribe_model: $("transcribe_model").value,
-    translate_model: $("translate_model").value,
-    timing_model: timingModelVal,
-    qc_model: qcModelVal,
+    audio_provider: audioProviderVal,
+    translator: translatorVal,
+    transcribe_model: transcribeModelVal,
+    translate_model: translateModelVal,
     deep_audio_qc: deepAudioQcVal,
     audio_fallback: audioSlots,
     translate_fallback: tlSlots,
@@ -2120,6 +2210,11 @@ $("retry-btn").addEventListener("click", async () => {
   if (!jobId) return;
   const isVisible = el => Boolean(el && !el.classList.contains("hidden"));
   const payload = {};
+
+  const retryAudioProvider = (currentJobParams && currentJobParams.audio_provider)
+    || ($("audio_provider") && $("audio_provider").value)
+    || "";
+  if (retryAudioProvider) payload.audio_provider = retryAudioProvider;
 
   if (isVisible($("retry-key-wrap")) && $("retry-gemini-key").value) {
     payload.gemini_key_label = $("retry-gemini-key").value;

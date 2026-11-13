@@ -52,8 +52,12 @@ def test_index_contains_fallback_retry_and_qc_elements(client):
     assert resp.status_code == 200
     html = resp.text
     required_ids = [
-        "timing_model",
-        "qc_model",
+        "audio_provider",
+        "transcribe_model",
+        "custom_transcribe_model",
+        "translator",
+        "translate_model",
+        "custom_translate_model",
         "deep_audio_qc",
         "audio-fallback-rows",
         "afb-key-1",
@@ -91,6 +95,10 @@ def test_index_contains_fallback_retry_and_qc_elements(client):
     ]
     for elem_id in required_ids:
         assert f'id="{elem_id}"' in html, f"Missing element id={elem_id!r} in index.html"
+
+    assert 'id="timing_model"' not in html
+    assert 'id="qc_model"' not in html
+
 
 
 def test_config_reports_providers(client, monkeypatch):
