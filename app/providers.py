@@ -1,6 +1,7 @@
 """API-client abstraction: config, retry, usage tracking, LLM clients."""
 from __future__ import annotations
 
+import base64
 import itertools
 import json
 import os
@@ -169,6 +170,10 @@ class Config:
     gemini_api_key: str
     openai_api_key: str | None
     anthropic_api_key: str | None
+    ninerouter_api_key: str | None
+    ninerouter_base_url: str
+    openrouter_api_key: str | None
+    openrouter_base_url: str
     transcribe_model: str
     translate_models: dict[str, str]
     ytdlp_cookies_file: str | None
@@ -188,7 +193,11 @@ class Config:
         load_dotenv(override=False)
         all_keys = get_all_gemini_keys()
         gemini_key = all_keys.get(_active_gemini_label, "")
-        if not gemini_key:
+        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip() or None
+        anthropic_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
+        ninerouter_api_key = (os.getenv("NINEROUTER_API_KEY") or "").strip() or None
+        openrouter_api_key = (os.getenv("OPENROUTER_API_KEY") or "").strip() or None
+        if not gemini_key and not ninerouter_api_key and not openrouter_api_key and not openai_key and not anthropic_key:
             raise ConfigError(
                 "GEMINI_API_KEY belum diisi. Salin .env.example menjadi .env "
                 "lalu isi GEMINI_API_KEY (wajib untuk transkripsi & translasi)."
@@ -215,8 +224,12 @@ class Config:
             ) from exc
         return cls(
             gemini_api_key=gemini_key,
-            openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip() or None,
-            anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip() or None,
+            openai_api_key=openai_key,
+            anthropic_api_key=anthropic_key,
+            ninerouter_api_key=ninerouter_api_key,
+            ninerouter_base_url=(os.getenv("NINEROUTER_BASE_URL") or "http://localhost:20128/v1").strip(),
+            openrouter_api_key=openrouter_api_key,
+            openrouter_base_url=(os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").strip(),
             transcribe_model=(os.getenv("TRANSCRIBE_MODEL") or "").strip() or default_transcribe,
             translate_models={
                 "gemini": (os.getenv("TRANSLATE_MODEL_GEMINI") or "").strip() or default_translate["gemini"],
@@ -238,9 +251,17 @@ class Config:
 
     def available_providers(self) -> dict[str, bool]:
         return {
+            "9router": bool(self.ninerouter_api_key),
+            "openrouter": bool(self.openrouter_api_key),
             "gemini": bool(self.gemini_api_key),
             "openai": bool(self.openai_api_key),
             "anthropic": bool(self.anthropic_api_key),
+        }
+
+    def available_audio_providers(self) -> dict[str, bool]:
+        return {
+            "gemini": bool(self.gemini_api_key),
+            "openrouter": bool(self.openrouter_api_key),
         }
 
 
@@ -500,13 +521,62 @@ class AnthropicClient:
         return _from_anthropic(resp)
 
 
+class NineRouterClient:
+    def __init__(self, api_key: str, model: str, base_url: str = "http://localhost:20128/v1"):
+        from openai import OpenAI
+        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+        self.model = model
+
+    def generate(self, system: str, user: str, audio=None) -> LLMResponse:
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+        return _from_openai(resp)
+
+
+class OpenRouterClient:
+    def __init__(self, api_key: str, model: str, base_url: str = "https://openrouter.ai/api/v1"):
+        from openai import OpenAI
+        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+        self.model = model
+
+    def upload_audio(self, path: Path):
+        return path
+
+    def generate(self, system: str, user: str, audio=None) -> LLMResponse:
+        if audio is not None:
+            audio_path = Path(audio)
+            b64_audio = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+            user_content = [
+                {"type": "text", "text": user},
+                {"type": "input_audio", "input_audio": {"data": b64_audio, "format": "mp3"}},
+            ]
+        else:
+            user_content = user
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user_content}],
+            temperature=0.3,
+        )
+        return _from_openai(resp)
+
+
 def make_transcriber(cfg: Config, model: str | None = None) -> GeminiClient:
     return GeminiClient(cfg.gemini_api_key, model or cfg.transcribe_model)
 
 
 def make_audio_client(
-    cfg: Config, model: str | None = None, key_label: str | None = None
-) -> GeminiClient:
+    cfg: Config, provider: str = "gemini", model: str | None = None, key_label: str | None = None
+) -> GeminiClient | OpenRouterClient:
+    if provider == "openrouter":
+        if not cfg.openrouter_api_key:
+            raise ConfigError("OPENROUTER_API_KEY belum diisi di .env")
+        return OpenRouterClient(cfg.openrouter_api_key, model or "qwen/qwen3.8-omni-flash", cfg.openrouter_base_url)
     label = (key_label or "").strip() or None
     if label is None:
         return make_transcriber(cfg, model=model)
@@ -533,7 +603,15 @@ def make_text_client(
     provider: str,
     model: str | None = None,
     key_label: str | None = None,
-) -> GeminiClient | OpenAIClient | AnthropicClient:
+) -> GeminiClient | OpenAIClient | AnthropicClient | NineRouterClient | OpenRouterClient:
+    if provider == "9router":
+        if not cfg.ninerouter_api_key:
+            raise ConfigError("NINEROUTER_API_KEY belum diisi di .env")
+        return NineRouterClient(cfg.ninerouter_api_key, model or "ag/gemini-3.8-flash-high", cfg.ninerouter_base_url)
+    if provider == "openrouter":
+        if not cfg.openrouter_api_key:
+            raise ConfigError("OPENROUTER_API_KEY belum diisi di .env")
+        return OpenRouterClient(cfg.openrouter_api_key, model or "deepseek/deepseek-chat", cfg.openrouter_base_url)
     label = (key_label or "").strip() or None
     if provider == "gemini" and label is not None:
         api_key = resolve_gemini_key(label, fallback_key=cfg.gemini_api_key)
@@ -545,6 +623,7 @@ def make_text_client(
 class AudioFallbackSlot:
     key_label: str
     model: str
+    provider: str = "gemini"
 
 
 @dataclass(frozen=True)

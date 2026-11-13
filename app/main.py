@@ -515,6 +515,10 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
             gemini_api_key=resolved_key,
             openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip() or None,
             anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip() or None,
+            ninerouter_api_key=(os.getenv("NINEROUTER_API_KEY") or "").strip() or None,
+            ninerouter_base_url=(os.getenv("NINEROUTER_BASE_URL") or "http://localhost:20128/v1").strip(),
+            openrouter_api_key=(os.getenv("OPENROUTER_API_KEY") or "").strip() or None,
+            openrouter_base_url=(os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").strip(),
             transcribe_model=default_trans,
             translate_models=dict(defaults["translation"]),
             ytdlp_cookies_file=None,
@@ -529,6 +533,10 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
             qc_batch_size=20,
             qc_model=defaults.get("qc", "gemini-2.5-flash"),
         )
+
+    if resolved_key and not cfg.gemini_api_key:
+        import dataclasses
+        cfg = dataclasses.replace(cfg, gemini_api_key=resolved_key)
 
     if req:
         avail = cfg.available_providers()

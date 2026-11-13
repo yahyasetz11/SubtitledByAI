@@ -34,6 +34,7 @@ def test_config_loads_keys_and_defaults(monkeypatch):
     assert cfg.qc_model == models["defaults"]["qc"]
     assert cfg.available_providers() == {
         "gemini": True, "openai": False, "anthropic": False,
+        "9router": False, "openrouter": False,
     }
     assert cfg.sub_min_duration == pytest.approx(0.7)
     assert cfg.sub_max_duration == pytest.approx(7.5)
@@ -142,6 +143,10 @@ def test_config_ignores_comment_as_cookies_value(monkeypatch):
 
 def test_config_missing_gemini_key_raises(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("NINEROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
         Config.load()
 
@@ -438,6 +443,10 @@ def _fake_cfg():
         gemini_api_key="key",
         openai_api_key="okey",
         anthropic_api_key="akey",
+        ninerouter_api_key="9r-key",
+        ninerouter_base_url="http://localhost:20128/v1",
+        openrouter_api_key="or-key",
+        openrouter_base_url="https://openrouter.ai/api/v1",
         transcribe_model="gemini-2.5-pro",
         translate_models={"gemini": "gemini-2.5-flash", "openai": "gpt-4o", "anthropic": "claude-sonnet-4-6"},
         ytdlp_cookies_file=None,
@@ -1139,5 +1148,131 @@ def test_transcription_default_dict_equality_and_str():
     # Unhashable: __hash__ removed
     with pytest.raises(TypeError):
         hash(tdd)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: 9router & OpenRouter clients, optional Gemini key at boot
+# ---------------------------------------------------------------------------
+
+from app.providers import NineRouterClient, OpenRouterClient
+
+
+def test_config_loads_without_gemini_key_if_other_providers_set(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("NINEROUTER_API_KEY", "9r-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    cfg = Config.load()
+    assert cfg.gemini_api_key == ""
+    assert cfg.ninerouter_api_key == "9r-key"
+    assert cfg.openrouter_api_key == "or-key"
+    assert cfg.available_providers()["gemini"] is False
+    assert cfg.available_providers()["9router"] is True
+    assert cfg.available_providers()["openrouter"] is True
+    assert cfg.available_audio_providers()["gemini"] is False
+    assert cfg.available_audio_providers()["openrouter"] is True
+
+
+def test_config_raises_when_no_provider_keys_at_all(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("NINEROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(ConfigError):
+        Config.load()
+
+
+def test_ninerouter_client_generates_json_response(monkeypatch):
+    client = NineRouterClient(
+        api_key="test-key",
+        model="ag/gemini-3.8-flash-high",
+        base_url="http://localhost:20128/v1",
+    )
+    fake_resp = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content='{"translated": "halo"}'),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+    )
+    monkeypatch.setattr(client.client.chat.completions, "create", lambda **kw: fake_resp)
+    resp = client.generate(system="sys", user="user")
+    assert resp.text == '{"translated": "halo"}'
+    assert resp.input_tokens == 10
+    assert resp.output_tokens == 5
+
+
+def test_openrouter_client_handles_text_and_audio_content(tmp_path, monkeypatch):
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="qwen/qwen3.8-omni-flash",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    audio_file = tmp_path / "chunk_001.mp3"
+    audio_file.write_bytes(b"dummy-mp3-bytes")
+
+    called_messages = []
+
+    def fake_create(**kw):
+        called_messages.append(kw.get("messages"))
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content='[{"id": 1, "ja": "test"}]'),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=50, completion_tokens=20),
+        )
+
+    monkeypatch.setattr(client.client.chat.completions, "create", fake_create)
+
+    # 1. Test text-only
+    resp_text = client.generate(system="sys", user="text prompt")
+    assert resp_text.text == '[{"id": 1, "ja": "test"}]'
+    assert len(called_messages[0]) == 2
+    assert called_messages[0][1]["content"] == "text prompt"
+
+    # 2. Test audio multimodal
+    resp_audio = client.generate(system="sys", user="audio prompt", audio=audio_file)
+    assert resp_audio.text == '[{"id": 1, "ja": "test"}]'
+    user_content = called_messages[1][1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[0] == {"type": "text", "text": "audio prompt"}
+    assert user_content[1]["type"] == "input_audio"
+    assert user_content[1]["input_audio"]["format"] == "mp3"
+    assert len(user_content[1]["input_audio"]["data"]) > 0
+
+    assert client.upload_audio(audio_file) == audio_file
+
+
+def test_make_audio_client_supports_openrouter(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    cfg = Config.load()
+    client = make_audio_client(cfg, provider="openrouter", model="qwen/qwen3.8-omni-flash")
+    assert isinstance(client, OpenRouterClient)
+    assert client.model == "qwen/qwen3.8-omni-flash"
+
+
+def test_make_text_client_supports_9router_and_openrouter(monkeypatch):
+    monkeypatch.setenv("NINEROUTER_API_KEY", "9r-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    cfg = Config.load()
+    c_9r = make_text_client(cfg, provider="9router")
+    assert isinstance(c_9r, NineRouterClient)
+    c_or = make_text_client(cfg, provider="openrouter")
+    assert isinstance(c_or, OpenRouterClient)
+
+
+def test_audio_fallback_slot_defaults_to_gemini():
+    slot = AudioFallbackSlot(key_label="Default", model="m0")
+    assert slot.provider == "gemini"
+    slot_or = AudioFallbackSlot(key_label="Default", model="m0", provider="openrouter")
+    assert slot_or.provider == "openrouter"
+
 
 
