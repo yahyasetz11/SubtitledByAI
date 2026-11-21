@@ -12,11 +12,13 @@ Semua informasi di sini bersifat pasti. Ikuti tanpa pengecualian.
 - **Nama segmen/episode selalu mengikuti pola:** "櫻坂46 meets 〇〇（nama komedian tamu）" — pola ini **jangan diterjemahkan**, biarkan format "Sakurazaka46 meets [Nama Tamu]".
 - **Regular member (pengisi tetap) saat ini:**
   - **Onuma Akiho (大沼晶保)** — member inti sejak awal acara.
-  - **Masumoto Kira (増本綺良)** — member inti sejak awal acara. _(Catatan: pada siaran 22 Mei 2026, Masumoto mengumumkan akan lulus dari grup — status kelulusannya dari acara ini masih perlu dicek update terbaru.)_
   - **Taniguchi Aki (谷口愛季)** — member inti generasi ke-3.
   - **Nakajima Yuzuki (中嶋優月)** — member inti generasi ke-3.
   - **Kojima Nagisa (小島凪紗)** — member inti generasi ke-3, bergabung sebagai regular baru pada siaran 12 Juni 2026 (diumumkan sebagai "pengumuman penting" pada 5 Juni 2026).
+  - **Sato Neo (佐藤愛桜)** — member inti generasi ke-4,
+  - **Yamada Momomi (山田桃実)** — member inti generasi ke-4,
 - **Mantan regular member (sudah tidak tampil):**
+  - **Masumoto Kira (増本綺良)** — member inti sejak awal acara.
   - **Inoue Rina (井上梨名)** — salah satu regular member awal.
   - **Takemoto Yui (武元唯衣)** — regular member awal, sebelumnya bertugas memandu jalannya acara (進行); lulus dari acara pada siaran 29 Mei 2026 seiring kelulusannya dari Sakurazaka46. Tugas memandu acara kini dilanjutkan oleh **Kojima Nagisa**.
 - **Tidak ada MC/narator tetap dari luar grup** — progresi acara dipandu oleh salah satu regular member (lihat poin di atas), sisanya adalah dialog spontan antara member dan tamu komedian.
@@ -37,6 +39,7 @@ Gunakan terjemahan berikut secara konsisten:
 | ぴったんこメモリー | Pittanko Memory | Pittanko Memory (nama segmen tetap, biarkan)                                             |
 | コント             | konto           | skit / konto (boleh pakai "skit komedi" jika perlu penjelasan)                           |
 | 芸人               | geinin          | komedian                                                                                 |
+| 珍獣               | chinjū          | orang nyentrik                                                                           |
 | VTR                | —               | video / VTR                                                                              |
 | ドッキリ           | dokkiri         | prank                                                                                    |
 | 罰ゲーム           | batsu game      | hukuman                                                                                  |

@@ -97,7 +97,7 @@ def list_sessions(include_done: bool = Query(False)) -> dict:
         except Exception:
             continue
         status = meta.get("status", "")
-        if status not in ("failed", "running") and not (include_done and status == "done"):
+        if status not in ("failed", "running", "cancelled") and not (include_done and status == "done"):
             continue
         job_id = meta["id"]
         params = meta.get("params", {})
@@ -208,7 +208,7 @@ def _validate_audio_model_override(
     value = (model or "").strip()
     if not value:
         return ""
-    if provider == "openrouter":
+    if provider in ("openrouter", "openai"):
         return value
     if value not in models_cfg["transcription"]["gemini"]:
         raise HTTPException(422, f"{field_name} tidak dikenal: {value!r}")
@@ -289,6 +289,7 @@ async def create_job(background_tasks: BackgroundTasks,
                      url: str = Form(""),
                      translator: str = Form("gemini"),
                      audio_provider: str = Form("gemini"),
+                     timing_provider: str = Form(""),
                      output_format: str = Form("both"),
                      save_mp4: bool = Form(False),
                      group: str = Form("sakurazaka"),
@@ -321,8 +322,11 @@ async def create_job(background_tasks: BackgroundTasks,
 
     translator = translator.strip()
     audio_provider = audio_provider.strip()
-    if audio_provider not in ("gemini", "openrouter"):
+    resolved_timing_provider = (timing_provider or "").strip() or audio_provider
+    if audio_provider not in ("gemini", "openrouter", "openai"):
         raise HTTPException(422, f"audio_provider tidak dikenal: {audio_provider!r}")
+    if resolved_timing_provider not in ("gemini", "openrouter", "openai"):
+        raise HTTPException(422, f"timing_provider tidak dikenal: {resolved_timing_provider!r}")
 
     models_cfg = providers.load_models_config()
 
@@ -338,6 +342,11 @@ async def create_job(background_tasks: BackgroundTasks,
         if isinstance(default_trans_cfg, dict)
         else default_trans
     )
+    default_trans_openai = (
+        default_trans_cfg.get("openai", "whisper-1")
+        if isinstance(default_trans_cfg, dict)
+        else "whisper-1"
+    )
 
     if mode != "translation_only":
         if audio_provider == "openrouter":
@@ -345,6 +354,11 @@ async def create_job(background_tasks: BackgroundTasks,
             if not resolved_transcribe_model:
                 raise HTTPException(
                     422, "transcribe_model wajib diisi untuk audio provider 'openrouter'.")
+        elif audio_provider == "openai":
+            resolved_transcribe_model = transcribe_model.strip() or default_trans_openai
+            if not resolved_transcribe_model:
+                raise HTTPException(
+                    422, "transcribe_model wajib diisi untuk audio provider 'openai'.")
         else:
             resolved_transcribe_model = transcribe_model.strip() or default_trans
             if resolved_transcribe_model not in models_cfg["transcription"]["gemini"]:
@@ -354,10 +368,10 @@ async def create_job(background_tasks: BackgroundTasks,
 
     if mode == "full":
         resolved_timing_model = _validate_audio_model_override(
-            timing_model, audio_provider, models_cfg, "timing_model"
+            timing_model, resolved_timing_provider, models_cfg, "timing_model"
         )
         resolved_qc_model = _validate_audio_model_override(
-            qc_model, audio_provider, models_cfg, "qc_model"
+            qc_model or timing_model, resolved_timing_provider, models_cfg, "qc_model"
         )
     else:
         resolved_timing_model = ""
@@ -410,6 +424,9 @@ async def create_job(background_tasks: BackgroundTasks,
     if mode != "translation_only" and not cfg.available_audio_providers().get(audio_provider):
         raise HTTPException(
             422, f"API key untuk audio provider {audio_provider!r} belum diisi di .env.")
+    if mode == "full" and not cfg.available_audio_providers().get(resolved_timing_provider):
+        raise HTTPException(
+            422, f"API key untuk timing provider {resolved_timing_provider!r} belum diisi di .env.")
     if (
         mode != "transcription_only"
         and not cfg.available_providers().get(translator)
@@ -428,6 +445,7 @@ async def create_job(background_tasks: BackgroundTasks,
         "url": url.strip() or None,
         "translator": translator,
         "audio_provider": audio_provider,
+        "timing_provider": resolved_timing_provider,
         "output_format": output_format,
         "save_mp4": save_mp4,
         "original_filename": upload_name,
@@ -508,10 +526,13 @@ class RetryRequest(BaseModel):
     translate_model: str | None = None
     translator: str | None = None
     audio_provider: str | None = None
+    timing_provider: str | None = None
+    qc_provider: str | None = None
     gemini_key_label: str | None = None
     deep_audio_qc: bool | None = None
     audio_fallback: list[dict] | None = None
     translate_fallback: list[dict] | None = None
+    stage: str | None = None
 
 
 @app.post("/api/jobs/{job_id}/retry")
@@ -545,6 +566,7 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
         raise HTTPException(409, "Job masih berjalan.")
 
     models_cfg = providers.load_models_config()
+    prev_params = dict(candidate.params)
     updated_params = dict(candidate.params)
 
     key_label = ((req.gemini_key_label if req else None) or "").strip()
@@ -600,7 +622,7 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
         prev_audio_provider = updated_params.get("audio_provider") or "gemini"
         audio_provider_val = (req.audio_provider or "").strip()
         if audio_provider_val:
-            if audio_provider_val not in ("gemini", "openrouter"):
+            if audio_provider_val not in ("gemini", "openrouter", "openai"):
                 raise HTTPException(
                     422, f"audio_provider tidak dikenal: {audio_provider_val!r}")
             if not cfg.available_audio_providers().get(audio_provider_val):
@@ -637,29 +659,64 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
         current_audio_provider = updated_params.get("audio_provider") or "gemini"
         transcribe_model_val = (req.transcribe_model or "").strip()
         if transcribe_model_val:
-            if current_audio_provider == "openrouter":
+            if current_audio_provider in ("openrouter", "openai"):
                 updated_params["transcribe_model"] = transcribe_model_val
             elif transcribe_model_val not in models_cfg["transcription"]["gemini"]:
                 raise HTTPException(422, f"transcribe_model tidak dikenal: {transcribe_model_val!r}")
             else:
                 updated_params["transcribe_model"] = transcribe_model_val
         elif audio_provider_val and audio_provider_val != prev_audio_provider:
-            updated_params["transcribe_model"] = models_cfg["defaults"]["transcription"][current_audio_provider]
+            trans_defs = models_cfg["defaults"]["transcription"]
+            updated_params["transcribe_model"] = (
+                trans_defs.get(current_audio_provider, "gemini-3.8-flash")
+                if isinstance(trans_defs, dict)
+                else trans_defs
+            )
 
         audio_provider_changed = bool(
             audio_provider_val and audio_provider_val != prev_audio_provider
         )
+
+        timing_provider_val = (req.timing_provider or "").strip()
+        if timing_provider_val:
+            if timing_provider_val not in ("gemini", "openrouter", "openai"):
+                raise HTTPException(422, f"timing_provider tidak dikenal: {timing_provider_val!r}")
+            updated_params["timing_provider"] = timing_provider_val
+        elif req.timing_model:
+            tm_raw = req.timing_model.strip()
+            if tm_raw in models_cfg["transcription"]["gemini"]:
+                updated_params["timing_provider"] = "gemini"
+            elif "/" in tm_raw:
+                updated_params["timing_provider"] = "openrouter"
+        qc_provider_val = (req.qc_provider or "").strip()
+        if qc_provider_val:
+            if qc_provider_val not in ("gemini", "openrouter", "openai"):
+                raise HTTPException(422, f"qc_provider tidak dikenal: {qc_provider_val!r}")
+            updated_params["qc_provider"] = qc_provider_val
+
+        current_timing_provider = updated_params.get("timing_provider") or current_audio_provider
+        if not cfg.available_audio_providers().get(current_timing_provider):
+            raise HTTPException(422, f"API key untuk timing provider {current_timing_provider!r} belum diisi di .env.")
+
+        current_qc_provider = updated_params.get("qc_provider") or current_timing_provider
+        if not cfg.available_audio_providers().get(current_qc_provider):
+            raise HTTPException(422, f"API key untuk QC provider {current_qc_provider!r} belum diisi di .env.")
+
         for field_name, raw_val in (
             ("timing_model", req.timing_model),
             ("qc_model", req.qc_model),
         ):
+            prov = current_qc_provider if field_name == "qc_model" else current_timing_provider
             model_val = _validate_audio_model_override(
-                raw_val or "", current_audio_provider, models_cfg, field_name
+                raw_val or "", prov, models_cfg, field_name
             )
             if model_val:
                 updated_params[field_name] = model_val
             elif audio_provider_changed:
                 updated_params[field_name] = ""
+
+        if updated_params.get("timing_model") and not updated_params.get("qc_model"):
+            updated_params["qc_model"] = updated_params["timing_model"]
 
         if req.deep_audio_qc is not None:
             updated_params["deep_audio_qc"] = req.deep_audio_qc
@@ -676,6 +733,106 @@ def retry(job_id: str, background_tasks: BackgroundTasks,
                 cfg,
                 active_key_label=key_label or providers.get_active_gemini_label(),
             )
+
+        def _canon_timing(p):
+            prov = p.get("timing_provider") or p.get("audio_provider") or "gemini"
+            m = (p.get("timing_model") or "").strip()
+            if not m:
+                m = p.get("transcribe_model") if not providers._is_transcription_model(p.get("transcribe_model") or "") else ""
+            if not m:
+                m = cfg.timing_model if prov == "gemini" else "google/gemini-3.8-flash"
+            if prov == "openrouter" and m.startswith("gemini-"):
+                m = f"google/{m}"
+            elif prov == "gemini" and m.startswith("google/gemini-"):
+                m = m.replace("google/", "")
+            return prov, m
+
+        def _canon_qc(p):
+            prov = p.get("qc_provider") or p.get("timing_provider") or p.get("audio_provider") or "gemini"
+            m = (p.get("qc_model") or "").strip()
+            if not m:
+                m = p.get("timing_model") or ""
+            if not m:
+                m = cfg.qc_model if prov == "gemini" else "google/gemini-3.8-flash"
+            if prov == "openrouter" and m.startswith("gemini-"):
+                m = f"google/{m}"
+            elif prov == "gemini" and m.startswith("google/gemini-"):
+                m = m.replace("google/", "")
+            return prov, m
+
+        target_stage = (req.stage or "").strip().lower() if req and req.stage else (candidate.failed_stage or "")
+
+        # Invalidate artifacts selectively based on target retry stage or actual model changes
+        if target_stage == "transcribe" or (
+            updated_params.get("transcribe_model") != prev_params.get("transcribe_model")
+            or updated_params.get("audio_provider") != prev_params.get("audio_provider")
+        ):
+            (candidate.dir / "transcript_jp.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("transcript_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "translated_id.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("translated_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "episode_glossary.json").unlink(missing_ok=True)
+            (candidate.dir / "timing" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "timing" / "report.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("timing_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "qc" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "qc" / "report.json").unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_pass1.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("qc_audio_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_input.sha256").unlink(missing_ok=True)
+            (candidate.dir / "result.ass").unlink(missing_ok=True)
+            (candidate.dir / "result.srt").unlink(missing_ok=True)
+        elif target_stage == "translate" or (
+            updated_params.get("translate_model") != prev_params.get("translate_model")
+            or updated_params.get("translator") != prev_params.get("translator")
+        ):
+            (candidate.dir / "translated_id.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("translated_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "episode_glossary.json").unlink(missing_ok=True)
+            (candidate.dir / "timing" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "timing" / "report.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("timing_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "qc" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "qc" / "report.json").unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_pass1.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("qc_audio_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_input.sha256").unlink(missing_ok=True)
+            (candidate.dir / "result.ass").unlink(missing_ok=True)
+            (candidate.dir / "result.srt").unlink(missing_ok=True)
+        elif target_stage == "timing" or (
+            target_stage != "qc" and _canon_timing(updated_params) != _canon_timing(prev_params)
+        ):
+            (candidate.dir / "timing" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "timing" / "report.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("timing_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "qc" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "qc" / "report.json").unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_pass1.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("qc_audio_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_input.sha256").unlink(missing_ok=True)
+            (candidate.dir / "result.ass").unlink(missing_ok=True)
+            (candidate.dir / "result.srt").unlink(missing_ok=True)
+        elif target_stage == "qc" or (
+            _canon_qc(updated_params) != _canon_qc(prev_params)
+            or updated_params.get("deep_audio_qc") != prev_params.get("deep_audio_qc")
+        ):
+            (candidate.dir / "qc" / "utterances.json").unlink(missing_ok=True)
+            (candidate.dir / "qc" / "report.json").unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_pass1.json").unlink(missing_ok=True)
+            for p in (candidate.dir / "chunks").glob("qc_audio_*.json"):
+                p.unlink(missing_ok=True)
+            (candidate.dir / "chunks" / "qc_input.sha256").unlink(missing_ok=True)
+            (candidate.dir / "result.ass").unlink(missing_ok=True)
+            (candidate.dir / "result.srt").unlink(missing_ok=True)
 
     prev_key_label = providers.get_active_gemini_label()
     switched_key = False

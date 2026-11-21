@@ -938,19 +938,36 @@ textarea:focus {
         </div>
       </div>
 
-      <!-- Audio Stage -->
+      <!-- Audio Stage: Transcription -->
       <div class="field-row mode-full mode-trans">
         <div class="field">
-          <label class="field-label" for="audio_provider">Audio Provider</label>
+          <label class="field-label" for="audio_provider">Provider transkripsi</label>
           <select id="audio_provider">
             <option value="gemini">Google Gemini</option>
             <option value="openrouter">OpenRouter (Multimodal)</option>
+            <option value="openai">OpenAI (Whisper)</option>
           </select>
         </div>
         <div class="field">
           <label class="field-label" for="transcribe_model">Model transkripsi</label>
           <select id="transcribe_model"></select>
-          <input type="text" id="custom_transcribe_model" class="hidden" style="margin-top:6px;" placeholder="Ketik model OpenRouter (contoh: qwen/qwen3.8-omni-flash)">
+          <input type="text" id="custom_transcribe_model" class="hidden" style="margin-top:6px;" placeholder="Ketik model OpenRouter (contoh: openai/whisper-large-v3-turbo)">
+        </div>
+      </div>
+
+      <!-- Audio Stage: Timing & QC -->
+      <div class="field-row mode-full">
+        <div class="field">
+          <label class="field-label" for="timing_qc_provider">Provider Timing & QC Audio</label>
+          <select id="timing_qc_provider">
+            <option value="gemini">Google Gemini</option>
+            <option value="openrouter">OpenRouter (Multimodal)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="timing_qc_model">Model Timing & QC Audio</label>
+          <select id="timing_qc_model"></select>
+          <input type="text" id="custom_timing_qc_model" class="hidden" style="margin-top:6px;" placeholder="Ketik model OpenRouter (contoh: google/gemini-3.8-flash)">
         </div>
       </div>
 
@@ -1125,29 +1142,37 @@ textarea:focus {
             <span id="retry-stage-label">Tahap gagal: —</span>
           </div>
           <div class="retry-controls" id="retry-controls">
+            <div class="retry-control-wrap" id="retry-stage-wrap">
+              <label for="retry-stage-select">Ulangi dari tahap:</label>
+              <select id="retry-stage-select" class="field-select"></select>
+            </div>
             <div class="retry-control-wrap hidden" id="retry-key-wrap">
-              <label for="retry-gemini-key">API Key:</label>
+              <label for="retry-gemini-key">API Key (Gemini):</label>
               <select id="retry-gemini-key" class="field-select"></select>
             </div>
             <div class="retry-control-wrap hidden" id="retry-audio-provider-wrap">
-              <label for="retry-audio-provider">Audio Provider:</label>
+              <label for="retry-audio-provider">Provider Transkripsi:</label>
               <select id="retry-audio-provider" class="field-select"></select>
             </div>
             <div class="retry-control-wrap hidden" id="retry-transcribe-wrap">
               <label for="retry-transcribe-model">Model Transkripsi:</label>
               <select id="retry-transcribe-model" class="field-select"></select>
             </div>
-            <div class="retry-control-wrap hidden" id="retry-timing-wrap">
-              <label for="retry-timing-model">Model Timing:</label>
-              <select id="retry-timing-model" class="field-select"></select>
-            </div>
             <div class="retry-control-wrap hidden" id="retry-translator-wrap">
-              <label for="retry-translator">Provider:</label>
+              <label for="retry-translator">Provider Translasi:</label>
               <select id="retry-translator" class="field-select"></select>
             </div>
             <div class="retry-control-wrap hidden" id="retry-translate-wrap">
               <label for="retry-translate-model">Model Terjemahan:</label>
               <select id="retry-translate-model" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-timing-provider-wrap">
+              <label for="retry-timing-provider">Provider Timing & QC:</label>
+              <select id="retry-timing-provider" class="field-select"></select>
+            </div>
+            <div class="retry-control-wrap hidden" id="retry-timing-wrap">
+              <label for="retry-timing-model">Model Timing:</label>
+              <select id="retry-timing-model" class="field-select"></select>
             </div>
             <div class="retry-control-wrap hidden" id="retry-qc-wrap">
               <label for="retry-qc-model">Model Audio QC:</label>
@@ -1269,11 +1294,41 @@ function populateTranscribeModelDropdown(provider) {
   const prev = sel.value;
   const items = models.map(m => ({ value: m, label: m }));
   if (def && !models.includes(def)) items.push({ value: def, label: def });
-  if (provider === "openrouter") {
+  if (provider === "openrouter" || provider === "openai") {
     items.push({ value: CUSTOM_MODEL_SENTINEL, label: "[Ketik model lain...]" });
   }
   populateSelect(sel, items, models.includes(prev) ? prev : def);
   syncCustomModelInput("transcribe_model", "custom_transcribe_model");
+}
+
+function populateTimingQcModelDropdown(provider) {
+  if (!globalConfig || !globalConfig.models) return;
+  const sel = $("timing_qc_model");
+  if (!sel) return;
+  const raw = globalConfig.models.transcription;
+  let models = Array.isArray(raw)
+    ? raw.slice()
+    : ((raw && raw[provider]) ? raw[provider].slice() : []);
+  if (provider === "openrouter") {
+    models = models.filter(m => !m.toLowerCase().includes("whisper") && !m.toLowerCase().includes("transcribe"));
+  }
+  let def = "";
+  if (provider === "gemini") {
+    def = (globalConfig.models.defaults && globalConfig.models.defaults.timing) || "gemini-3.8-flash";
+  } else if (provider === "openrouter") {
+    def = "google/gemini-3.8-flash";
+    if (!models.includes(def) && models.length > 0) {
+      def = models[0];
+    }
+  }
+  const prev = sel.value;
+  const items = models.map(m => ({ value: m, label: m }));
+  if (def && !models.includes(def)) items.unshift({ value: def, label: def });
+  if (provider === "openrouter") {
+    items.push({ value: CUSTOM_MODEL_SENTINEL, label: "[Ketik model lain...]" });
+  }
+  populateSelect(sel, items, (models.includes(prev) || (def && prev === def)) ? prev : def);
+  syncCustomModelInput("timing_qc_model", "custom_timing_qc_model");
 }
 
 function populateTranslateModelDropdown(provider) {
@@ -1436,6 +1491,20 @@ async function showRetryBox(stage) {
       if (inheritedAudioModel && !audioList.includes(inheritedAudioModel)) {
         audioList = [inheritedAudioModel, ...audioList];
       }
+      const timingProvider = params.timing_provider || params.timing_qc_provider || ($("timing_qc_provider") && $("timing_qc_provider").value) || audioProvider;
+      if ($("retry-timing-provider") && audioProviderOptions.length > 0) {
+        populateSelect($("retry-timing-provider"), audioProviderOptions, timingProvider);
+      }
+      const retryTimingProv = ($("retry-timing-provider") && $("retry-timing-provider").value) || timingProvider;
+
+      let rawTimingAudio = (globalConfig.models && globalConfig.models.transcription && globalConfig.models.transcription[retryTimingProv]) || [];
+      let timingAudioList = Array.isArray(rawTimingAudio) ? rawTimingAudio.slice() : [];
+      if (retryTimingProv === "openrouter") {
+        timingAudioList = timingAudioList.filter(m => !m.toLowerCase().includes("whisper") && !m.toLowerCase().includes("transcribe"));
+      }
+      const defaultTimingMod = (params.timing_model && timingAudioList.includes(params.timing_model))
+        ? params.timing_model
+        : ((globalConfig.models && globalConfig.models.defaults && globalConfig.models.defaults.timing) || timingAudioList[0] || "");
       populateSelect(
         $("retry-transcribe-model"),
         audioList,
@@ -1443,13 +1512,13 @@ async function showRetryBox(stage) {
       );
       populateSelect(
         $("retry-timing-model"),
-        audioList,
-        params.timing_model || inheritedAudioModel
+        timingAudioList,
+        defaultTimingMod
       );
       populateSelect(
         $("retry-qc-model"),
-        audioList,
-        params.qc_model || inheritedAudioModel
+        timingAudioList,
+        (params.qc_model && timingAudioList.includes(params.qc_model)) ? params.qc_model : defaultTimingMod
       );
       populateSelect($("retry-translator"), availProviders, activeProv);
       const chosenProv = ($("retry-translator") && $("retry-translator").value) || activeProv;
@@ -1481,30 +1550,65 @@ async function showRetryBox(stage) {
     );
   }
 
-  const isTranscribe = effectiveStage === "transcribe";
-  const isTiming = effectiveStage === "timing";
-  const isTranslate = effectiveStage === "translate" || (effectiveStage === "qc" && effectiveMode === "translation_only");
-  const isAudioQc = effectiveStage === "qc" && effectiveMode !== "translation_only";
+  const stageSelect = $("retry-stage-select");
+  if (stageSelect) {
+    const stageOptions = [];
+    if (effectiveMode === "full") {
+      if (effectiveStage === "qc") {
+        stageOptions.push({ value: "qc", label: "QC saja (lanjutkan hasil Timing)" });
+        stageOptions.push({ value: "timing", label: "Timing & QC (ulang dari Timing)" });
+        stageOptions.push({ value: "translate", label: "Translasi, Timing & QC" });
+        stageOptions.push({ value: "transcribe", label: "Transkripsi dari awal" });
+      } else if (effectiveStage === "timing") {
+        stageOptions.push({ value: "timing", label: "Timing & QC (lanjutkan hasil Translasi)" });
+        stageOptions.push({ value: "translate", label: "Translasi, Timing & QC" });
+        stageOptions.push({ value: "transcribe", label: "Transkripsi dari awal" });
+      } else if (effectiveStage === "translate") {
+        stageOptions.push({ value: "translate", label: "Translasi (lanjutkan hasil Transkripsi)" });
+        stageOptions.push({ value: "transcribe", label: "Transkripsi dari awal" });
+      } else {
+        stageOptions.push({ value: "transcribe", label: "Transkripsi dari awal" });
+      }
+    } else if (effectiveMode === "transcription_only") {
+      stageOptions.push({ value: "transcribe", label: "Transkripsi dari awal" });
+    } else if (effectiveMode === "translation_only") {
+      if (effectiveStage === "qc") {
+        stageOptions.push({ value: "qc", label: "QC (lanjutkan hasil Translasi)" });
+        stageOptions.push({ value: "translate", label: "Translasi & QC" });
+      } else {
+        stageOptions.push({ value: "translate", label: "Translasi dari awal" });
+      }
+    }
+    const defStage = effectiveStage && stageOptions.some(o => o.value === effectiveStage)
+      ? effectiveStage
+      : (stageOptions[0] ? stageOptions[0].value : "qc");
+    populateSelect(stageSelect, stageOptions, defStage);
+    if (!stageSelect.dataset.bound) {
+      stageSelect.addEventListener("change", syncRetryStageVisibility);
+      stageSelect.dataset.bound = "1";
+    }
+  }
 
-  const showTranscribe = isTranscribe;
-  const showTiming = isTiming;
-  const showTranslator = isTranslate || isAudioQc;
-  const showTranslate = isTranslate || isAudioQc;
-  const showQc = isAudioQc;
-  const showAudioProvider = (showTranscribe || showTiming || showQc)
-    && audioProviderOptions.length > 1;
-  const showKey = hasKeys && (isTranscribe || isTiming || isAudioQc || (isTranslate && activeProv === "gemini"));
+  function syncRetryStageVisibility() {
+    const chosenStage = ($("retry-stage-select") && $("retry-stage-select").value) || effectiveStage;
+    const isTrans = chosenStage === "transcribe";
+    const isTl = chosenStage === "translate" || (chosenStage === "transcribe" && effectiveMode !== "transcription_only");
+    const isTm = (chosenStage === "timing" || chosenStage === "translate" || chosenStage === "transcribe") && effectiveMode === "full";
+    const isQc = (chosenStage === "qc" || isTm) && (effectiveMode === "full" || effectiveMode === "translation_only");
 
-  $("retry-audio-provider-wrap").classList.toggle("hidden", !showAudioProvider);
-  $("retry-key-wrap").classList.toggle("hidden", !showKey);
-  $("retry-transcribe-wrap").classList.toggle("hidden", !showTranscribe);
-  $("retry-timing-wrap").classList.toggle("hidden", !showTiming);
-  $("retry-translator-wrap").classList.toggle("hidden", !showTranslator);
-  $("retry-translate-wrap").classList.toggle("hidden", !showTranslate);
-  $("retry-qc-wrap").classList.toggle("hidden", !showQc);
+    $("retry-audio-provider-wrap").classList.toggle("hidden", !(isTrans && audioProviderOptions.length > 1));
+    $("retry-transcribe-wrap").classList.toggle("hidden", !isTrans);
+    $("retry-translator-wrap").classList.toggle("hidden", !isTl);
+    $("retry-translate-wrap").classList.toggle("hidden", !isTl);
+    if ($("retry-timing-provider-wrap")) {
+      $("retry-timing-provider-wrap").classList.toggle("hidden", !((isTm || isQc) && audioProviderOptions.length > 1));
+    }
+    $("retry-timing-wrap").classList.toggle("hidden", !isTm);
+    $("retry-qc-wrap").classList.toggle("hidden", !isQc);
+    updateRetryKeyVisibility();
+  }
 
-  const hasControls = showKey || showTranscribe || showTiming || showTranslator || showTranslate || showQc;
-  $("retry-controls").classList.toggle("hidden", !hasControls);
+  syncRetryStageVisibility();
   retryBox.classList.remove("hidden");
 }
 
@@ -1661,9 +1765,9 @@ async function loadConfig() {
   const audioProvSel = $("audio_provider");
   if (audioProvSel) {
     const audioCfg = cfg.audio_providers || {};
-    const enabledAudio = ["gemini", "openrouter"].filter(p => Boolean(audioCfg[p]));
+    const enabledAudio = ["gemini", "openrouter", "openai"].filter(p => Boolean(audioCfg[p]));
     if (enabledAudio.length === 0) enabledAudio.push("gemini");
-    const audioLabels = { gemini: "Google Gemini", openrouter: "OpenRouter (Multimodal)" };
+    const audioLabels = { gemini: "Google Gemini", openrouter: "OpenRouter (Multimodal)", openai: "OpenAI (Whisper)" };
     const preferredAudio = enabledAudio.includes("gemini") ? "gemini" : enabledAudio[0];
     populateSelect(
       audioProvSel,
@@ -1676,9 +1780,29 @@ async function loadConfig() {
     }
   }
 
+  // Populate timing & QC audio provider dropdown
+  const timingProvSel = $("timing_qc_provider");
+  if (timingProvSel) {
+    const audioCfg = cfg.audio_providers || {};
+    const enabledAudio = ["gemini", "openrouter"].filter(p => Boolean(audioCfg[p]));
+    if (enabledAudio.length === 0) enabledAudio.push("gemini");
+    const audioLabels = { gemini: "Google Gemini", openrouter: "OpenRouter (Multimodal)" };
+    const preferredTiming = enabledAudio.includes("gemini") ? "gemini" : enabledAudio[0];
+    populateSelect(
+      timingProvSel,
+      enabledAudio.map(p => ({ value: p, label: audioLabels[p] || p })),
+      preferredTiming
+    );
+    if (!timingProvSel.dataset.bound) {
+      timingProvSel.addEventListener("change", () => populateTimingQcModelDropdown(timingProvSel.value));
+      timingProvSel.dataset.bound = "1";
+    }
+  }
+
   // Populate model dropdowns
   if (cfg.models) {
     populateTranscribeModelDropdown(audioProvSel ? audioProvSel.value : "gemini");
+    populateTimingQcModelDropdown(timingProvSel ? timingProvSel.value : "gemini");
     populateTranslateModelDropdown(sel.value);
     // Keep translation model dropdown in sync when provider changes
     if (!sel.dataset.bound) {
@@ -1689,6 +1813,10 @@ async function loadConfig() {
     if (!$("transcribe_model").dataset.bound) {
       $("transcribe_model").addEventListener("change", () => syncCustomModelInput("transcribe_model", "custom_transcribe_model"));
       $("transcribe_model").dataset.bound = "1";
+    }
+    if ($("timing_qc_model") && !$("timing_qc_model").dataset.bound) {
+      $("timing_qc_model").addEventListener("change", () => syncCustomModelInput("timing_qc_model", "custom_timing_qc_model"));
+      $("timing_qc_model").dataset.bound = "1";
     }
     if (!$("translate_model").dataset.bound) {
       $("translate_model").addEventListener("change", () => syncCustomModelInput("translate_model", "custom_translate_model"));
@@ -2023,8 +2151,11 @@ function listen(id) {
       return;
     }
     if (ev.status === "cancelled") {
+      lastFailedStage = ev.stage || "timing";
       logLine(ev.stage, "cancelled", "Proses dibatalkan.");
       hideCancelBtn();
+      showRetryBox(lastFailedStage);
+      loadSessions();
       return;
     }
     logLine(ev.stage, ev.status, ev.message || ev.status);
@@ -2129,7 +2260,9 @@ $("job-form").addEventListener("submit", async e => {
   }
 
   const audioProviderVal = $("audio_provider") ? $("audio_provider").value : "gemini";
+  const timingProviderVal = $("timing_qc_provider") ? $("timing_qc_provider").value : "gemini";
   const transcribeModelVal = resolveModelSelection("transcribe_model", "custom_transcribe_model");
+  const timingModelVal = resolveModelSelection("timing_qc_model", "custom_timing_qc_model");
   const translateModelVal = resolveModelSelection("translate_model", "custom_translate_model");
   const translatorVal = $("translator").value;
   const deepAudioQcVal = currentMode === "full" && $("deep_audio_qc") ? $("deep_audio_qc").checked : false;
@@ -2137,6 +2270,11 @@ $("job-form").addEventListener("submit", async e => {
   if ($("transcribe_model").value === CUSTOM_MODEL_SENTINEL && !transcribeModelVal) {
     $("custom_transcribe_model").focus();
     alert("Ketik nama model transkripsi terlebih dahulu.");
+    return;
+  }
+  if (currentMode === "full" && $("timing_qc_model") && $("timing_qc_model").value === CUSTOM_MODEL_SENTINEL && !timingModelVal) {
+    $("custom_timing_qc_model").focus();
+    alert("Ketik nama model timing & QC terlebih dahulu.");
     return;
   }
   if ($("translate_model").value === CUSTOM_MODEL_SENTINEL && !translateModelVal) {
@@ -2154,7 +2292,10 @@ $("job-form").addEventListener("submit", async e => {
   }
   fd.append("translator", translatorVal);
   fd.append("audio_provider", audioProviderVal);
+  fd.append("timing_provider", timingProviderVal);
   fd.append("transcribe_model", transcribeModelVal);
+  fd.append("timing_model", timingModelVal);
+  fd.append("qc_model", timingModelVal);
   fd.append("translate_model", translateModelVal);
   fd.append("deep_audio_qc", deepAudioQcVal ? "true" : "false");
   fd.append("audio_fallback", JSON.stringify(audioSlots));
@@ -2204,8 +2345,11 @@ $("job-form").addEventListener("submit", async e => {
   currentJobParams = {
     mode: currentMode,
     audio_provider: audioProviderVal,
+    timing_provider: timingProviderVal,
     translator: translatorVal,
     transcribe_model: transcribeModelVal,
+    timing_model: timingModelVal,
+    qc_model: timingModelVal,
     translate_model: translateModelVal,
     deep_audio_qc: deepAudioQcVal,
     audio_fallback: audioSlots,
@@ -2217,6 +2361,15 @@ $("job-form").addEventListener("submit", async e => {
   logLine("job", "start", "Job " + jobId + " dimulai...");
   listen(jobId);
 });
+
+function updateRetryKeyVisibility() {
+  const hasKeys = Boolean(globalConfig && globalConfig.gemini_keys && globalConfig.gemini_keys.length > 0);
+  const ap = $("retry-audio-provider") ? $("retry-audio-provider").value : "";
+  const tp = $("retry-timing-provider") ? $("retry-timing-provider").value : "";
+  const tl = $("retry-translator") ? $("retry-translator").value : "";
+  const usesGemini = ap === "gemini" || tp === "gemini" || tl === "gemini";
+  $("retry-key-wrap").classList.toggle("hidden", !(hasKeys && usesGemini));
+}
 
 // ── Retry ────────────────────────────────────────────────────────
 $("retry-audio-provider").addEventListener("change", () => {
@@ -2233,9 +2386,25 @@ $("retry-audio-provider").addEventListener("change", () => {
   const current = ($("retry-transcribe-model") && $("retry-transcribe-model").value) || "";
   const selected = audioList.includes(current) ? current : def;
   populateSelect($("retry-transcribe-model"), audioList, selected);
-  populateSelect($("retry-timing-model"), audioList, selected);
-  populateSelect($("retry-qc-model"), audioList, selected);
+  updateRetryKeyVisibility();
 });
+
+if ($("retry-timing-provider")) {
+  $("retry-timing-provider").addEventListener("change", () => {
+    if (!globalConfig || !globalConfig.models) return;
+    const prov = $("retry-timing-provider").value || "gemini";
+    let rawTimingAudio = (globalConfig.models.transcription && globalConfig.models.transcription[prov]) || [];
+    let timingAudioList = Array.isArray(rawTimingAudio) ? rawTimingAudio.slice() : [];
+    if (prov === "openrouter") {
+      timingAudioList = timingAudioList.filter(m => !m.toLowerCase().includes("whisper") && !m.toLowerCase().includes("transcribe"));
+    }
+    const def = prov === "gemini" ? ((globalConfig.models.defaults && globalConfig.models.defaults.timing) || "gemini-3.8-flash") : "google/gemini-3.8-flash";
+    const defVal = timingAudioList.includes(def) ? def : (timingAudioList[0] || "");
+    populateSelect($("retry-timing-model"), timingAudioList, defVal);
+    populateSelect($("retry-qc-model"), timingAudioList, defVal);
+    updateRetryKeyVisibility();
+  });
+}
 
 $("retry-translator").addEventListener("change", () => {
   if (!globalConfig || !globalConfig.models) return;
@@ -2243,16 +2412,16 @@ $("retry-translator").addEventListener("change", () => {
   const models = (globalConfig.models.translation && globalConfig.models.translation[prov]) || [];
   const def = (globalConfig.models.defaults && globalConfig.models.defaults.translation && globalConfig.models.defaults.translation[prov]) || "";
   populateSelect($("retry-translate-model"), models, def);
-  const effectiveMode = currentJobMode || (currentJobParams && currentJobParams.mode) || currentMode || "full";
-  const isAudioQc = lastFailedStage === "qc" && effectiveMode !== "translation_only";
-  const hasKeys = Boolean(globalConfig.gemini_keys && globalConfig.gemini_keys.length > 0);
-  $("retry-key-wrap").classList.toggle("hidden", !(hasKeys && (isAudioQc || prov === "gemini")));
+  updateRetryKeyVisibility();
 });
 
 $("retry-btn").addEventListener("click", async () => {
   if (!jobId) return;
   const isVisible = el => Boolean(el && !el.classList.contains("hidden"));
   const payload = {};
+
+  const retryStage = $("retry-stage-select") ? $("retry-stage-select").value : (lastFailedStage || "");
+  if (retryStage) payload.stage = retryStage;
 
   const retryAudioProvider = (
     isVisible($("retry-audio-provider-wrap")) && $("retry-audio-provider").value
@@ -2267,6 +2436,10 @@ $("retry-btn").addEventListener("click", async () => {
   }
   if (isVisible($("retry-transcribe-wrap")) && $("retry-transcribe-model").value) {
     payload.transcribe_model = $("retry-transcribe-model").value;
+  }
+  if (isVisible($("retry-timing-provider-wrap")) && $("retry-timing-provider").value) {
+    payload.timing_provider = $("retry-timing-provider").value;
+    payload.qc_provider = $("retry-timing-provider").value;
   }
   if (isVisible($("retry-timing-wrap")) && $("retry-timing-model").value) {
     payload.timing_model = $("retry-timing-model").value;
@@ -2387,10 +2560,23 @@ async function loadSessions() {
       useBtn.onclick = () => window.setupContinuity(sel.value);
       btn.parentNode.insertBefore(useBtn, btn.nextSibling);
       
-      sel.addEventListener('change', () => {
+      sel.addEventListener('change', async () => {
           const opt = sel.options[sel.selectedIndex];
           const isTransDone = opt && opt.dataset.status === 'done' && opt.dataset.mode === 'transcription_only';
           useBtn.classList.toggle('hidden', !isTransDone);
+          if (opt && opt.value && (opt.dataset.status === 'failed' || opt.dataset.status === 'cancelled')) {
+              jobId = opt.value;
+              try {
+                  const jr = await fetch("/api/jobs/" + opt.value);
+                  if (jr.ok) {
+                      const jd = await jr.json();
+                      currentJobParams = jd.params || {};
+                      currentJobMode = (jd.params && jd.params.mode) || "full";
+                      lastFailedStage = jd.failed_stage || "timing";
+                      showRetryBox(lastFailedStage);
+                  }
+              } catch (_) {}
+          }
       });
   }
   

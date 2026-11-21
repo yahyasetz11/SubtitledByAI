@@ -71,7 +71,7 @@ def parse_transcript(text: str) -> list[Utterance]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        ja = str(item.get("ja", "")).strip()
+        ja = str(item.get("ja") or item.get("text") or "").strip()
         if not ja:
             continue
         try:

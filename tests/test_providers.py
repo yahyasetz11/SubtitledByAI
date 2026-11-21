@@ -1275,4 +1275,250 @@ def test_audio_fallback_slot_defaults_to_gemini():
     assert slot_or.provider == "openrouter"
 
 
+def test_openai_client_omits_temperature_for_gpt6_and_reasoning_models(monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenAIClient
+
+    fake_resp = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"result": "ok"}'), finish_reason="stop")],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+    )
+
+    for m in ("gpt-6.1-terra", "gpt-6.1-sol", "gpt-6.1-luna", "gpt-6.1-astra", "gpt-6-astra", "gpt-6-luna", "o1-mini", "o3-mini"):
+        client = OpenAIClient(api_key="fake-key", model=m)
+        recorded_kwargs = []
+        monkeypatch.setattr(client.client.chat.completions, "create", lambda **kw: recorded_kwargs.append(kw) or fake_resp)
+        resp = client.generate(system="sys", user="user")
+        assert resp.text == '{"result": "ok"}'
+        assert len(recorded_kwargs) == 1
+        assert "temperature" not in recorded_kwargs[0], f"temperature should be omitted for {m}"
+
+    # Verify standard model keeps temperature=0.3
+    client_4o = OpenAIClient(api_key="fake-key", model="gpt-4o")
+    recorded_4o = []
+    monkeypatch.setattr(client_4o.client.chat.completions, "create", lambda **kw: recorded_4o.append(kw) or fake_resp)
+    client_4o.generate(system="sys", user="user")
+    assert recorded_4o[0].get("temperature") == 0.3
+
+
+def test_openai_client_retries_without_temperature_on_unsupported_value_error(monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenAIClient
+
+    client = OpenAIClient(api_key="fake-key", model="future-model")
+    fake_resp = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"result": "ok"}'), finish_reason="stop")],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+    )
+    calls = []
+
+    def fake_create(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            raise Exception(
+                "Error code: 400 - {'error': {'message': \"Unsupported value: 'temperature' does not support 0.3 with this model. Only the default (1) value is supported.\", 'type': 'invalid_request_error', 'param': 'temperature', 'code': 'unsupported_value'}}"
+            )
+        return fake_resp
+
+    monkeypatch.setattr(client.client.chat.completions, "create", fake_create)
+    resp = client.generate(system="sys", user="user")
+    assert resp.text == '{"result": "ok"}'
+    assert len(calls) == 2
+    assert "temperature" in calls[0]
+    assert "temperature" not in calls[1]
+
+
+def test_openrouter_client_whisper_transcription_endpoint(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenRouterClient
+    from app.transcribe import parse_transcript
+
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="openai/whisper-large-v3-turbo",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    audio_file = tmp_path / "chunk_001.mp3"
+    audio_file.write_bytes(b"dummy-audio-data")
+
+    fake_raw = SimpleNamespace(
+        text=json.dumps({
+            "language": "ja",
+            "duration": 4.5,
+            "segments": [
+                {"id": 0, "start": 0.5, "end": 2.0, "text": "こんにちは"},
+                {"id": 1, "start": 2.2, "end": 4.0, "text": "さようなら"},
+            ],
+            "usage": {"seconds": 4.5},
+        })
+    )
+
+    created_args = []
+    monkeypatch.setattr(
+        client.client.audio.transcriptions.with_raw_response,
+        "create",
+        lambda **kw: created_args.append(kw) or fake_raw,
+    )
+
+    resp = client.generate(system="sys", user="user", audio=audio_file)
+    assert len(created_args) == 1
+    assert created_args[0]["model"] == "openai/whisper-large-v3-turbo"
+    assert created_args[0]["response_format"] == "verbose_json"
+
+    # Verify parse_transcript parses this seamlessly
+    utterances = parse_transcript(resp.text)
+    assert len(utterances) == 2
+    assert utterances[0].ja == "こんにちは"
+    assert utterances[0].start == 0.5
+    assert utterances[0].end == 2.0
+    assert utterances[1].ja == "さようなら"
+
+
+def test_openrouter_client_whisper_fallback_from_chat_completions_error(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenRouterClient
+    from app.transcribe import parse_transcript
+
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="custom-transcribe-model",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    audio_file = tmp_path / "chunk_001.mp3"
+    audio_file.write_bytes(b"dummy-audio-data")
+
+    def fake_chat_create(**kw):
+        raise Exception(
+            "Error code: 400 - {'error': {'message': 'custom-transcribe-model is a transcription model and cannot be used with the chat/completions endpoint. Use the /api/v1/audio/transcriptions endpoint instead.', 'code': 400}, 'user_id': 'user_3Flv6P2O9Sc86EBnWWdjqyYem1P'}"
+        )
+
+    fake_raw = SimpleNamespace(
+        text=json.dumps({
+            "language": "ja",
+            "duration": 3.0,
+            "segments": [
+                {"id": 0, "start": 0.0, "end": 2.5, "text": "テスト成功"},
+            ],
+        })
+    )
+
+    monkeypatch.setattr(client.client.chat.completions, "create", fake_chat_create)
+    monkeypatch.setattr(
+        client.client.audio.transcriptions.with_raw_response,
+        "create",
+        lambda **kw: fake_raw,
+    )
+
+    resp = client.generate(system="sys", user="user", audio=audio_file)
+    utts = parse_transcript(resp.text)
+    assert len(utts) == 1
+    assert utts[0].ja == "テスト成功"
+
+
+def test_openai_client_whisper_transcription_endpoint_and_fallback(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenAIClient, make_audio_client, Config
+    from app.transcribe import parse_transcript
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
+    cfg = Config.load()
+    client = make_audio_client(cfg, provider="openai", model="whisper-large-v3-turbo")
+    assert isinstance(client, OpenAIClient)
+
+    audio_file = tmp_path / "chunk_001.mp3"
+    audio_file.write_bytes(b"dummy-audio-data")
+
+    created_calls = []
+
+    def fake_create(**kw):
+        created_calls.append(kw)
+        if kw.get("model") == "whisper-large-v3-turbo":
+            # Simulate OpenAI official endpoint error for unhosted model name
+            raise Exception("The model 'whisper-large-v3-turbo' does not exist or you do not have access to it.")
+        return SimpleNamespace(
+            text=json.dumps({
+                "language": "ja",
+                "duration": 2.0,
+                "segments": [{"id": 0, "start": 0.0, "end": 2.0, "text": "テスト"}],
+                "usage": {"seconds": 2.0},
+            })
+        )
+
+    monkeypatch.setattr(client.client.audio.transcriptions.with_raw_response, "create", fake_create)
+    resp = client.generate(system="sys", user="user", audio=audio_file)
+    utts = parse_transcript(resp.text)
+    assert len(utts) == 1
+    assert utts[0].ja == "テスト"
+    assert len(created_calls) == 2
+    assert created_calls[0]["model"] == "whisper-large-v3-turbo"
+    assert created_calls[1]["model"] == "whisper-1"
+
+
+def test_openai_client_gpt_transcribe_with_prompt_and_keywords(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenAIClient, make_audio_client, Config
+    from app.transcribe import parse_transcript
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
+    cfg = Config.load()
+    client = make_audio_client(cfg, provider="openai", model="gpt-transcribe")
+    assert isinstance(client, OpenAIClient)
+
+    audio_file = tmp_path / "chunk_001.mp3"
+    audio_file.write_bytes(b"dummy-audio-data")
+
+    created_calls = []
+
+    def fake_create(**kw):
+        created_calls.append(kw)
+        return SimpleNamespace(
+            text=json.dumps({
+                "language": "ja",
+                "duration": 3.0,
+                "segments": [{"id": 0, "start": 0.0, "end": 3.0, "text": "森田ひかるです"}],
+                "usage": {"seconds": 3.0},
+            })
+        )
+
+    monkeypatch.setattr(client.client.audio.transcriptions.with_raw_response, "create", fake_create)
+    mock_system = (
+        "=== KONTEKS ACARA ===\n"
+        "| そこ曲がったら、櫻坂？ | Sokomagattara Sakurazaka? | Acara |\n"
+        "=== ROSTER MEMBER ===\n"
+        "- 森田ひかる (Morita Hikaru)\n"
+    )
+    resp = client.generate(system=mock_system, user="user", audio=audio_file)
+    utts = parse_transcript(resp.text)
+    assert len(utts) == 1
+    assert utts[0].ja == "森田ひかるです"
+    assert len(created_calls) == 1
+    assert created_calls[0]["model"] == "gpt-transcribe"
+    assert created_calls[0]["response_format"] == "json"
+    assert "keywords" in created_calls[0]["extra_body"]
+    assert "森田ひかる" in created_calls[0]["extra_body"]["keywords"]
+    assert "そこ曲がったら、櫻坂？" in created_calls[0]["extra_body"]["keywords"]
+    assert created_calls[0]["extra_body"]["languages"] == ["ja"]
+    assert "prompt" in created_calls[0]
+
+
+def test_openai_client_gpt_transcribe_plain_json_splits_sentences(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.providers import OpenAIClient
+    from app.transcribe import parse_transcript
+
+    client = OpenAIClient(api_key="sk-test", model="gpt-transcribe")
+    audio_file = tmp_path / "chunk_001.mp3"
+    audio_file.write_bytes(b"dummy")
+
+    fake_resp = SimpleNamespace(
+        text=json.dumps({"text": "森田ひかるです。よろしくお願いします！", "duration": 4.0})
+    )
+    monkeypatch.setattr(client.client.audio.transcriptions.with_raw_response, "create", lambda **kw: fake_resp)
+    resp = client.generate(system="", user="", audio=audio_file)
+    utts = parse_transcript(resp.text)
+    assert len(utts) == 2
+    assert utts[0].ja == "森田ひかるです。"
+    assert utts[1].ja == "よろしくお願いします！"
+
+
 

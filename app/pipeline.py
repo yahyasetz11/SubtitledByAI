@@ -317,17 +317,23 @@ def _make_audio_runner(
     client_model = getattr(primary_client, "model", None)
     if not isinstance(client_model, str):
         client_model = ""
+    stage_transcribe_default = (
+        "" if providers._is_transcription_model(cfg.transcribe_model or "")
+        else cfg.transcribe_model
+    )
     stage_default = {
         "timing": cfg.timing_model,
         "qc": cfg.qc_model,
-    }.get(stage, cfg.transcribe_model)
+    }.get(stage, stage_transcribe_default or cfg.transcribe_model)
     primary_model = (
         primary_model
         or client_model
         or stage_default
-        or cfg.transcribe_model
+        or stage_transcribe_default
         or "gemini-2.5-flash"
     )
+    if primary_provider == "openrouter" and primary_model.startswith("gemini-"):
+        primary_model = f"google/{primary_model}"
     primary_label = active_key_label or providers.get_active_gemini_label()
     primary_slot = providers.AudioFallbackSlot(
         key_label=primary_label,
@@ -345,8 +351,11 @@ def _make_audio_runner(
             return primary_client
         key_label = None if slot == primary_slot else slot.key_label
         provider = getattr(slot, "provider", None) or primary_provider
+        model = slot.model
+        if provider == "openrouter" and model.startswith("gemini-"):
+            model = f"google/{model}"
         return providers.make_audio_client(
-            cfg, provider=provider, model=slot.model, key_label=key_label
+            cfg, provider=provider, model=model, key_label=key_label
         )
 
     def _resolve_key(slot: providers.AudioFallbackSlot) -> str:
@@ -779,21 +788,41 @@ def _stage_timing(job: Job, cfg, tracker, rows: list[dict],
     _invalidate_downstream(job, clear_qc=True)
 
     n = len(chunks)
-    audio_provider = job.params.get("audio_provider") or "gemini"
+    raw_timing_model = (job.params.get("timing_model") or "").strip()
+    if job.params.get("timing_provider"):
+        timing_provider = job.params["timing_provider"]
+    elif job.params.get("timing_qc_provider"):
+        timing_provider = job.params["timing_qc_provider"]
+    elif raw_timing_model.startswith("gemini-") and "/" not in raw_timing_model:
+        timing_provider = "gemini"
+    elif "/" in raw_timing_model:
+        timing_provider = "openrouter"
+    else:
+        timing_provider = job.params.get("audio_provider") or "gemini"
+
     timing_model = (
-        job.params.get("timing_model")
-        or job.params.get("transcribe_model")
-        or cfg.timing_model
+        raw_timing_model
+        or (
+            job.params.get("transcribe_model")
+            if timing_provider == (job.params.get("audio_provider") or "gemini")
+            and not providers._is_transcription_model(job.params.get("transcribe_model") or "")
+            else ""
+        )
+        or (cfg.timing_model if timing_provider == "gemini" else "google/gemini-3.8-flash")
     )
+    if timing_provider == "openrouter" and timing_model.startswith("gemini-"):
+        timing_model = f"google/{timing_model}"
+    elif timing_provider == "gemini" and timing_model.startswith("google/gemini-"):
+        timing_model = timing_model.replace("google/", "")
     _emit(job, "timing", "start",
           f"koreksi timing {len(rows)} ujaran via {timing_model} ({n} chunk)")
 
     gemini = providers.make_audio_client(
-        cfg, provider=audio_provider, model=timing_model
+        cfg, provider=timing_provider, model=timing_model
     )
     runner4 = _make_audio_runner(
         job, cfg, "timing", timing_model, primary_client=gemini,
-        primary_provider=audio_provider,
+        primary_provider=timing_provider,
         active_key_label=active_key_label,
     )
     utterances = [transcribe.Utterance.from_dict(r) for r in rows]
@@ -879,12 +908,35 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
         return result
 
     deep_audio_qc = bool(job.params.get("deep_audio_qc", False))
-    audio_provider = job.params.get("audio_provider") or "gemini"
+    raw_qc_model = (job.params.get("qc_model") or "").strip()
+    if job.params.get("qc_provider"):
+        qc_provider = job.params["qc_provider"]
+    elif job.params.get("timing_provider"):
+        qc_provider = job.params["timing_provider"]
+    elif job.params.get("timing_qc_provider"):
+        qc_provider = job.params["timing_qc_provider"]
+    elif raw_qc_model.startswith("gemini-") and "/" not in raw_qc_model:
+        qc_provider = "gemini"
+    elif "/" in raw_qc_model:
+        qc_provider = "openrouter"
+    else:
+        qc_provider = job.params.get("audio_provider") or "gemini"
+
     qc_model = (
-        job.params.get("qc_model")
-        or job.params.get("transcribe_model")
-        or cfg.qc_model
+        raw_qc_model
+        or job.params.get("timing_model")
+        or (
+            job.params.get("transcribe_model")
+            if qc_provider == (job.params.get("audio_provider") or "gemini")
+            and not providers._is_transcription_model(job.params.get("transcribe_model") or "")
+            else ""
+        )
+        or (cfg.qc_model if qc_provider == "gemini" else "google/gemini-3.8-flash")
     )
+    if qc_provider == "openrouter" and qc_model.startswith("gemini-"):
+        qc_model = f"google/{qc_model}"
+    elif qc_provider == "gemini" and qc_model.startswith("google/gemini-"):
+        qc_model = qc_model.replace("google/", "")
     mode_label = (
         "deep" if (deep_audio_qc and audio_path is not None)
         else ("hybrid" if audio_path is not None else "text-only")
@@ -936,11 +988,11 @@ def _stage_qc(job: Job, cfg, tracker, rows: list[dict],
     audio_runner_3 = None
     if audio_path is not None:
         audio_client = providers.make_audio_client(
-            cfg, provider=audio_provider, model=qc_model
+            cfg, provider=qc_provider, model=qc_model
         )
         runner4 = _make_audio_runner(
             job, cfg, "qc", qc_model, primary_client=audio_client,
-            primary_provider=audio_provider,
+            primary_provider=qc_provider,
             active_key_label=active_key_label,
         )
 

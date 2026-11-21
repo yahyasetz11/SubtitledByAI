@@ -365,11 +365,13 @@ def test_sessions_excludes_done_jobs(client, tmp_path):
 def test_sessions_returns_failed_and_running(client, tmp_path):
     _write_job(tmp_path, "20260618-100000-aaaaaa", "failed", original_filename="ep1.mp4")
     _write_job(tmp_path, "20260618-110000-bbbbbb", "running", original_filename="ep2.mp4")
+    _write_job(tmp_path, "20260618-113000-dddddd", "cancelled", original_filename="ep4.mp4")
     _write_job(tmp_path, "20260618-120000-cccccc", "done",   original_filename="ep3.mp4")
     sessions = client.get("/api/sessions").json()["sessions"]
     ids = [s["id"] for s in sessions]
     assert "20260618-100000-aaaaaa" in ids
     assert "20260618-110000-bbbbbb" in ids
+    assert "20260618-113000-dddddd" in ids
     assert "20260618-120000-cccccc" not in ids
 
 
@@ -1054,3 +1056,118 @@ def test_retry_audio_provider_switch_clears_timing_qc_models(
     assert job.params["audio_provider"] == "openrouter"
     assert job.params["timing_model"] == ""
     assert job.params["qc_model"] == ""
+
+
+def test_create_job_and_retry_with_timing_provider(client, fake_run, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    resp = post_url_job(
+        client,
+        audio_provider="openrouter",
+        timing_provider="gemini",
+        transcribe_model="openai/whisper-large-v3-turbo",
+        timing_model="gemini-2.5-flash",
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    assert job.params["audio_provider"] == "openrouter"
+    assert job.params["timing_provider"] == "gemini"
+    assert job.params["transcribe_model"] == "openai/whisper-large-v3-turbo"
+    assert job.params["timing_model"] == "gemini-2.5-flash"
+
+    job.status = "failed"
+    job.failed_stage = "timing"
+    pipeline._save(job)
+    resp_retry = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"timing_provider": "openrouter", "timing_model": "google/gemini-3.8-flash"},
+    )
+    assert resp_retry.status_code == 200
+    assert pipeline.JOBS[job_id].params["timing_provider"] == "openrouter"
+    assert pipeline.JOBS[job_id].params["timing_model"] == "google/gemini-3.8-flash"
+
+
+def test_retry_model_override_clears_downstream_checkpoints_for_all_stages(client, fake_run):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    job.status = "failed"
+    job.failed_stage = "timing"
+
+    tl_path = job.dir / "translated_id.json"
+    tl_path.write_text("[]", encoding="utf-8")
+    timing_path = job.dir / "timing" / "utterances.json"
+    timing_path.parent.mkdir(parents=True, exist_ok=True)
+    timing_path.write_text("[]", encoding="utf-8")
+    qc_path = job.dir / "qc" / "utterances.json"
+    qc_path.parent.mkdir(parents=True, exist_ok=True)
+    qc_path.write_text("[]", encoding="utf-8")
+    pipeline._save(job)
+
+    # 1. Override timing model -> timing & qc cleared, translate kept
+    resp1 = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"timing_model": "gemini-2.5-flash"},
+    )
+    assert resp1.status_code == 200
+    assert tl_path.exists()
+    assert not timing_path.exists()
+    assert not qc_path.exists()
+    assert pipeline.JOBS[job_id].params["timing_model"] == "gemini-2.5-flash"
+    assert pipeline.JOBS[job_id].params["qc_model"] == "gemini-2.5-flash"
+
+    # 2. Re-create translate and timing artifacts, then override translate model -> both cleared
+    tl_path.write_text("[]", encoding="utf-8")
+    timing_path.write_text("[]", encoding="utf-8")
+    pipeline.JOBS[job_id].status = "failed"
+    pipeline.JOBS[job_id].failed_stage = "timing"
+    pipeline._save(pipeline.JOBS[job_id])
+
+    resp2 = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"translate_model": "gemini-3.7-flash"},
+    )
+    assert resp2.status_code == 200
+    assert not tl_path.exists()
+    assert not timing_path.exists()
+    assert pipeline.JOBS[job_id].params["translate_model"] == "gemini-3.7-flash"
+
+
+def test_create_job_supports_openai_audio_provider(client, fake_run, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    resp = post_url_job(
+        client,
+        audio_provider="openai",
+        transcribe_model="gpt-transcribe",
+        timing_provider="gemini",
+        timing_model="gemini-2.5-flash",
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    assert job.params["audio_provider"] == "openai"
+    assert job.params["transcribe_model"] == "gpt-transcribe"
+
+
+def test_retry_stage_qc_preserves_timing_utterances(client, fake_run, monkeypatch):
+    job_id = post_url_job(client).json()["job_id"]
+    job = pipeline.JOBS[job_id]
+    job.status = "failed"
+    job.failed_stage = "qc"
+
+    timing_path = job.dir / "timing" / "utterances.json"
+    timing_path.parent.mkdir(parents=True, exist_ok=True)
+    timing_path.write_text('[{"id": 1, "start": 0.0, "end": 1.0, "ja": "test"}]', encoding="utf-8")
+
+    qc_path = job.dir / "qc" / "utterances.json"
+    qc_path.parent.mkdir(parents=True, exist_ok=True)
+    qc_path.write_text("[]", encoding="utf-8")
+    pipeline._save(job)
+
+    resp = client.post(
+        f"/api/jobs/{job_id}/retry",
+        json={"stage": "qc", "qc_model": "gemini-2.5-flash"},
+    )
+    assert resp.status_code == 200
+    assert timing_path.exists()
+    assert not qc_path.exists()
+    assert pipeline.JOBS[job_id].params["qc_model"] == "gemini-2.5-flash"

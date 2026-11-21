@@ -1299,3 +1299,86 @@ def test_pipeline_inherits_translator_and_translate_model_for_text_qc(env, monke
     assert runner_calls and runner_calls[0][1] == "deepseek/deepseek-chat"
 
 
+def test_pipeline_whisper_transcription_does_not_leak_into_timing_or_qc(env, monkeypatch):
+    job = pipeline.create_job(make_params(
+        transcribe_model="openai/whisper-large-v3-turbo",
+        timing_model="",
+        qc_model="",
+    ))
+    cfg = providers.Config.load()
+    runner_timing = pipeline._make_audio_runner(job, cfg, "timing", "")
+    assert runner_timing is not None
+
+    # Verify timing model resolution in pipeline
+    trans_m = job.params.get("transcribe_model")
+    if trans_m and providers._is_transcription_model(trans_m):
+        trans_m = None
+    resolved_timing = (
+        job.params.get("timing_model")
+        or trans_m
+        or cfg.timing_model
+    )
+    assert resolved_timing == cfg.timing_model
+    assert "whisper" not in resolved_timing.lower()
+
+
+def test_pipeline_openrouter_audio_provider_maps_gemini_to_google_prefix(env, monkeypatch):
+    from pathlib import Path
+    from app import audio
+    calls = []
+
+    def fake_make_audio_client(cfg, provider="gemini", model=None, key_label=None):
+        calls.append({"provider": provider, "model": model})
+        return object()
+
+    monkeypatch.setattr("app.providers.make_audio_client", fake_make_audio_client)
+    monkeypatch.setattr("app.timing.reanchor_all", lambda *a, **kw: ([], []))
+
+    job = pipeline.create_job(make_params(
+        audio_provider="openrouter",
+        transcribe_model="openai/whisper-large-v3-turbo",
+        timing_model="",
+        qc_model="",
+    ))
+    cfg = providers.Config.load()
+    tracker = providers.UsageTracker(job.dir / "usage.json")
+    rows = [{"id": 1, "start": 0.0, "end": 1.0, "ja": "test", "type": "dialogue"}]
+    chunks = [audio.PlannedChunk(index=1, start=0.0, end=1.0, overlap_prev=False)]
+    pipeline._stage_timing(job, cfg, tracker, rows, chunks, audio_path=Path("dummy.mp3"))
+
+    assert any(
+        c["provider"] == "openrouter" and c["model"].startswith("google/")
+        for c in calls
+    )
+
+
+def test_pipeline_timing_provider_gemini_with_openrouter_audio(env, monkeypatch):
+    from pathlib import Path
+    from app import audio
+    calls = []
+
+    def fake_make_audio_client(cfg, provider="gemini", model=None, key_label=None):
+        calls.append({"provider": provider, "model": model})
+        return object()
+
+    monkeypatch.setattr("app.providers.make_audio_client", fake_make_audio_client)
+    monkeypatch.setattr("app.timing.reanchor_all", lambda *a, **kw: ([], []))
+
+    job = pipeline.create_job(make_params(
+        audio_provider="openrouter",
+        timing_provider="gemini",
+        transcribe_model="openai/whisper-large-v3-turbo",
+        timing_model="gemini-2.5-flash",
+    ))
+    cfg = providers.Config.load()
+    tracker = providers.UsageTracker(job.dir / "usage.json")
+    rows = [{"id": 1, "start": 0.0, "end": 1.0, "ja": "test", "type": "dialogue"}]
+    chunks = [audio.PlannedChunk(index=1, start=0.0, end=1.0, overlap_prev=False)]
+    pipeline._stage_timing(job, cfg, tracker, rows, chunks, audio_path=Path("dummy.mp3"))
+
+    assert any(
+        c["provider"] == "gemini" and c["model"] == "gemini-2.5-flash"
+        for c in calls
+    )
+
+

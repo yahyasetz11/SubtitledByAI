@@ -17,7 +17,6 @@ Always spell names exactly as written here when they appear in subtitles.
 | 幸阪茉里乃 | Kosaka Marino   | Marino          |
 | 田村保乃   | Tamura Hono     | Honosu          |
 | 藤吉夏鈴   | Fujiyoshi Karin | Karin           |
-| 増本綺良   | Masumoto Kira   | Kira            |
 | 松田里奈   | Matsuda Rina    | Matsuda         |
 | 森田ひかる | Morita Hikaru   | Run             |
 | 守屋麗奈   | Moriya Rena     | Rena            |
@@ -57,16 +56,24 @@ Always spell names exactly as written here when they appear in subtitles.
 
 ## Graduated Members (may appear in archive footage or throwback segments)
 
-| Kanji      | Romaji        | Notes                                 |
-| ---------- | ------------- | ------------------------------------- |
-| 菅井友香   | Sugai Yuka    | Former captain, graduated 2023        |
-| 渡辺梨加   | Watanabe Rika | Graduated 2022                        |
-| 土生瑞穂   | Habu Mizuho   | Graduated 2022                        |
-| 上村莉菜   | Kamimura Rina | Graduated 2022                        |
-| 尾関梨香   | Ozeki Rika    | Graduated 2023                        |
-| 原田葵     | Harada Aoi    | Graduated (moved to other activities) |
-| 小林由依   | Kobayashi Yui | Graduated 2024                        |
-| 齋藤冬優花 | Saito Fuyuka  | Graduated 2023                        |
+| Kanji      | Romaji          | Notes                       |
+| ---------- | --------------- | --------------------------- |
+| 松平璃子   | Matsudaira Riko | Graduated 2022              |
+| 守屋茜     | Moriya Akane    | Graduated 2022              |
+| 渡辺梨加   | Watanabe Rika   | Graduated 2022              |
+| 渡邉理佐   | Watanabe Risa   | Graduated 2022              |
+| 原田葵     | Harada Aoi      | Graduated 2022              |
+| 尾関梨香   | Ozeki Rika      | Graduated 2022              |
+| 菅井友香   | Sugai Yuka      | 1st captain, Graduated 2022 |
+| 関有美子   | Seki Yumiko     | Graduated 2023              |
+| 土生瑞穂   | Habu Mizuho     | Graduated 2023              |
+| 小林由依   | Kobayashi Yui   | Graduated 2024              |
+| 齋藤冬優花 | Saito Fuyuka    | Graduated 2025              |
+| 上村莉菜   | Uemura Rina     | Graduated 2025              |
+| 小池美波   | Koike Minami    | Graduated 2025              |
+| 井上梨名   | Inoue Rina      | Graduated 2025              |
+| 武元唯衣   | Takemoto Yui    | Graduated 2026              |
+| 増本綺良   | Masumoto Kira   | Graduated 2026              |
 
 ---
 
